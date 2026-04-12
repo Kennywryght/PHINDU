@@ -1,0 +1,12 @@
+{
+  "python.analysis.extraPaths": [
+    "backend"
+  ],
+  "python.autoComplete.extraPaths": [
+    "backend"
+  ],
+  "python.linting.pylintArgs": [
+    "--init-hook",
+    "import sys; sys.path.append('backend')"
+  ]
+}
