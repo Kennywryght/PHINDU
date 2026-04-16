@@ -87,12 +87,12 @@
     {:else}
       <table class="sales-table">
         <thead>
-          <tr><th>ID</th><th>Total</th><th>Date</th></tr>
+          <tr><th>Products</th><th>Total</th><th>Date</th></tr>
         </thead>
         <tbody>
           {#each sales as sale}
             <tr>
-              <td>{sale.id.slice(0,8)}</td>
+              <td>{sale.products.join(', ') || '-'}</td>
               <td>MWK {sale.total_amount}</td>
               <td>{new Date(sale.created_at).toLocaleString()}</td>
             </tr>

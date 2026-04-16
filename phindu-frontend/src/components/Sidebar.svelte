@@ -1,5 +1,5 @@
 <script>
-  import { createEventDispatcher } from 'svelte';
+  import { createEventDispatcher, onMount, onDestroy } from 'svelte';
 
   export let sidebarOpen = false;
   const dispatch = createEventDispatcher();
@@ -16,23 +16,52 @@
 
   let currentPath = window.location.pathname;
 
-  // Update active state on navigation
+  function updateCurrentPath() {
+    currentPath = window.location.pathname;
+  }
+
+  onMount(() => {
+    window.addEventListener('popstate', updateCurrentPath);
+    return () => window.removeEventListener('popstate', updateCurrentPath);
+  });
+
   function navigate(href) {
     if (window.navigate) {
       window.navigate(href);
     } else {
       window.location.href = href;
     }
+    currentPath = href;
+    // Auto‑close on mobile after navigation
+    if (window.innerWidth <= 768) {
+      dispatch('close');
+    }
   }
 
-  // Keep currentPath in sync with popstate (handled by App.svelte)
-  // We'll listen to a custom event or just rely on re-render.
-  // Simple approach: update on click.
+  function closeSidebar() {
+    dispatch('close');
+  }
+
+  function handleKeydown(e) {
+    if (e.key === 'Escape' && sidebarOpen) {
+      closeSidebar();
+    }
+  }
+
+  onMount(() => {
+    window.addEventListener('keydown', handleKeydown);
+    return () => window.removeEventListener('keydown', handleKeydown);
+  });
 </script>
 
+{#if sidebarOpen}
+  <div class="backdrop" on:click={closeSidebar}></div>
+{/if}
+
 <aside class="sidebar" class:open={sidebarOpen}>
-  <div class="logo">
+  <div class="sidebar-header">
     <h2>PHINDU</h2>
+    <button class="close-btn" on:click={closeSidebar} aria-label="Close menu">✕</button>
   </div>
   <nav>
     {#each navItems as item}
@@ -49,6 +78,17 @@
 </aside>
 
 <style>
+  .backdrop {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: 90;
+    display: none;
+  }
+
   .sidebar {
     position: fixed;
     left: 0;
@@ -62,25 +102,47 @@
     padding: 1.5rem 0.75rem;
     z-index: 100;
     transition: transform 0.3s ease;
+    overflow-y: auto;
   }
 
-  .logo {
-    padding: 0 1rem 2rem;
+  .sidebar-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 0.5rem 1.5rem;
+  }
+
+  .sidebar-header h2 {
     font-weight: 700;
-    font-size: 1.5rem;
+    font-size: 1.8rem;
     color: var(--primary);
+  }
+
+  .close-btn {
+    display: none;
+    background: none;
+    border: none;
+    font-size: 2rem;
+    cursor: pointer;
+    color: var(--text-light);
+    padding: 0.25rem 0.5rem;
   }
 
   .nav-item {
     display: flex;
     align-items: center;
     gap: 0.75rem;
-    padding: 0.75rem 1rem;
+    padding: 0.9rem 1rem;
     margin: 0.25rem 0;
     border-radius: var(--radius);
     color: var(--text-light);
     width: 100%;
+    background: none;
+    border: none;
+    cursor: pointer;
+    text-align: left;
     transition: all 0.2s;
+    white-space: nowrap;
   }
 
   .nav-item:hover {
@@ -94,15 +156,43 @@
   }
 
   .icon {
-    font-size: 1.25rem;
+    font-size: 1.4rem;
   }
 
+  .label {
+    font-size: 1rem;
+  }
+
+  /* Mobile styles */
   @media (max-width: 768px) {
+    .backdrop {
+      display: block;
+    }
+
     .sidebar {
       transform: translateX(-100%);
+      width: 280px;               /* fixed width for mobile */
+      max-width: 85vw;
     }
+
     .sidebar.open {
       transform: translateX(0);
+      box-shadow: var(--shadow-lg);
+    }
+
+    .close-btn {
+      display: block;
+    }
+
+    .nav-item {
+      padding: 1rem 1rem;
+    }
+  }
+
+  /* Desktop: sidebar always visible */
+  @media (min-width: 769px) {
+    .sidebar {
+      transform: translateX(0) !important;
     }
   }
 </style>

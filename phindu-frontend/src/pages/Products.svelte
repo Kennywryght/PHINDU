@@ -1,4 +1,4 @@
-<script>
+\<script>
   import { onMount } from 'svelte';
   import Layout from '../components/Layout.svelte';
   import ProductModal from '../components/ProductModal.svelte';
@@ -8,20 +8,40 @@
   let loading = true;
   let showModal = false;
   let editingProduct = null;
-  let filter = 'all'; // all, active, archived
+  let filter = 'all'; // all, active, archived, deleted
 
   onMount(fetchProducts);
 
   async function fetchProducts() {
+    loading = true;
     try {
-      const res = await API.get('/products/');
-      products = res.data;
+      let url = '/products/';
+      if (filter === 'deleted') {
+        url += '?include_deleted=true';
+      }
+      const res = await API.get(url);
+      // Filter client-side for other tabs (backend only filters deleted)
+      let filtered = res.data;
+      if (filter === 'active') {
+        filtered = filtered.filter(p => !p.archived && !p.is_deleted);
+      } else if (filter === 'archived') {
+        filtered = filtered.filter(p => p.archived && !p.is_deleted);
+      } else if (filter === 'deleted') {
+        filtered = filtered.filter(p => p.is_deleted);
+      } else {
+        // 'all' shows everything except deleted (or include if you want)
+        filtered = filtered.filter(p => !p.is_deleted);
+      }
+      products = filtered;
     } catch (err) {
-      console.error(err);
+      console.error('Failed to fetch products', err);
     } finally {
       loading = false;
     }
   }
+
+  // Reactively refetch when filter changes
+  $: filter, fetchProducts();
 
   async function handleSave(productData) {
     try {
@@ -65,6 +85,15 @@
     }
   }
 
+  async function handleRestore(id) {
+    try {
+      await API.put(`/products/restore/${id}`);
+      fetchProducts();
+    } catch (err) {
+      alert('Restore failed');
+    }
+  }
+
   function openModal(product = null) {
     editingProduct = product;
     showModal = true;
@@ -74,12 +103,6 @@
     showModal = false;
     editingProduct = null;
   }
-
-  $: filteredProducts = products.filter(p => {
-    if (filter === 'archived') return p.archived;
-    if (filter === 'active') return !p.archived;
-    return true;
-  });
 </script>
 
 <Layout title="Products">
@@ -88,6 +111,7 @@
       <button class:active={filter === 'all'} on:click={() => filter = 'all'}>All</button>
       <button class:active={filter === 'active'} on:click={() => filter = 'active'}>Active</button>
       <button class:active={filter === 'archived'} on:click={() => filter = 'archived'}>Archived</button>
+      <button class:active={filter === 'deleted'} on:click={() => filter = 'deleted'}>Deleted</button>
     </div>
     <button class="btn btn-primary" on:click={() => openModal()}>+ Add Product</button>
   </div>
@@ -110,25 +134,35 @@
             </tr>
           </thead>
           <tbody>
-            {#each filteredProducts as product}
+            {#each products as product}
               <tr>
                 <td>{product.name}</td>
                 <td>{product.category}</td>
                 <td>MWK {product.selling_price}</td>
                 <td>{product.stock_qty}</td>
                 <td>
-                  <span class="status" class:archived={product.archived}>
-                    {product.archived ? 'Archived' : 'Active'}
+                  <span class="status" class:archived={product.archived} class:deleted={product.is_deleted}>
+                    {#if product.is_deleted}
+                      Deleted
+                    {:else if product.archived}
+                      Archived
+                    {:else}
+                      Active
+                    {/if}
                   </span>
                 </td>
                 <td class="actions">
-                  <button on:click={() => openModal(product)}>✏️</button>
-                  {#if product.archived}
-                    <button on:click={() => handleUnarchive(product.id)}>↩️</button>
+                  {#if product.is_deleted}
+                    <button on:click={() => handleRestore(product.id)}>↩️ Restore</button>
                   {:else}
-                    <button on:click={() => handleArchive(product.id)}>📦</button>
+                    <button on:click={() => openModal(product)}>✏️</button>
+                    {#if product.archived}
+                      <button on:click={() => handleUnarchive(product.id)}>↩️ Unarchive</button>
+                    {:else}
+                      <button on:click={() => handleArchive(product.id)}>📦 Archive</button>
+                    {/if}
+                    <button class="danger" on:click={() => handleDelete(product.id)}>🗑️</button>
                   {/if}
-                  <button class="danger" on:click={() => handleDelete(product.id)}>🗑️</button>
                 </td>
               </tr>
             {/each}
@@ -138,12 +172,18 @@
 
       <!-- Mobile Cards (hidden on desktop) -->
       <div class="mobile-cards">
-        {#each filteredProducts as product}
+        {#each products as product}
           <div class="product-card">
             <div class="card-header">
               <h3>{product.name}</h3>
-              <span class="status" class:archived={product.archived}>
-                {product.archived ? 'Archived' : 'Active'}
+              <span class="status" class:archived={product.archived} class:deleted={product.is_deleted}>
+                {#if product.is_deleted}
+                  Deleted
+                {:else if product.archived}
+                  Archived
+                {:else}
+                  Active
+                {/if}
               </span>
             </div>
             <div class="details">
@@ -152,13 +192,17 @@
               <div><span>Stock:</span> {product.stock_qty}</div>
             </div>
             <div class="card-actions">
-              <button on:click={() => openModal(product)}>Edit</button>
-              {#if product.archived}
-                <button on:click={() => handleUnarchive(product.id)}>Unarchive</button>
+              {#if product.is_deleted}
+                <button on:click={() => handleRestore(product.id)}>↩️ Restore</button>
               {:else}
-                <button on:click={() => handleArchive(product.id)}>Archive</button>
+                <button on:click={() => openModal(product)}>Edit</button>
+                {#if product.archived}
+                  <button on:click={() => handleUnarchive(product.id)}>Unarchive</button>
+                {:else}
+                  <button on:click={() => handleArchive(product.id)}>Archive</button>
+                {/if}
+                <button class="danger" on:click={() => handleDelete(product.id)}>Delete</button>
               {/if}
-              <button class="danger" on:click={() => handleDelete(product.id)}>Delete</button>
             </div>
           </div>
         {/each}
@@ -195,6 +239,7 @@
     border-radius: var(--radius);
     background: var(--surface);
     border: 1px solid var(--border);
+    cursor: pointer;
   }
 
   .filter-tabs button.active {
@@ -236,6 +281,11 @@
   }
 
   .status.archived {
+    background: #fef3c7;
+    color: #92400e;
+  }
+
+  .status.deleted {
     background: #fee2e2;
     color: #991b1b;
   }
@@ -247,6 +297,7 @@
 
   .actions button {
     padding: 0.25rem 0.5rem;
+    cursor: pointer;
   }
 
   .danger {
@@ -294,6 +345,7 @@
     padding: 0.5rem;
     border: 1px solid var(--border);
     border-radius: var(--radius);
+    cursor: pointer;
   }
 
   @media (max-width: 768px) {

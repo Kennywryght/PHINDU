@@ -104,7 +104,7 @@ input:focus, select:focus, textarea:focus {
 
 @media (max-width: 768px) {
   :root {
-    --sidebar-width: 0;
-    --sidebar-collapsed: 0;
+    --sidebar-width: 260px;
+    --sidebar-collapsed: 64px;
   }
 }

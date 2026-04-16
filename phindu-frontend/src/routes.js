@@ -5,7 +5,7 @@ import Sales from './pages/Sales.svelte';
 import Insights from './pages/Insights.svelte';
 import Expenses from './pages/Expenses.svelte';
 import Alerts from './pages/Alerts.svelte';
-
+import Sessions from './pages/Sessions.svelte';
 export const routes = {
   '/': Dashboard,
   '/dashboard': Dashboard,
@@ -14,5 +14,6 @@ export const routes = {
   '/sales': Sales,
   '/insights': Insights,
   '/expenses': Expenses,
-  '/alerts': Alerts
+  '/alerts': Alerts,
+  '/sessions': Sessions,
 };

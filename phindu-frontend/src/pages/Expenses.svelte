@@ -7,6 +7,17 @@
   let category = '';
   let loading = false;
   let message = '';
+  let expenses = [];
+
+  onMount(fetchExpenses);
+  async function fetchExpenses() {
+    try {
+      const res = await API.get('/expenses/');
+      expenses = res.data;
+    } catch (err) {
+      console.error('Failed to fetch expenses', err);
+    }
+  }
 
   async function handleSubmit() {
     if (!name.trim() || !amount) {
@@ -90,6 +101,28 @@
           {/if}
         </button>
       </form>
+    </div>
+    <div class="expenses-list card">
+      <h3>Recent Expenses</h3>
+      {#if expenses.length === 0}
+        <p>No expenses recorded.</p>
+      {:else}
+        <table>
+          <thead>
+            <tr><th>Name</th><th>Amount</th><th>Category</th><th>Date</th></tr>
+          </thead>
+          <tbody>
+            {#each expenses as exp}
+              <tr>
+                <td>{exp.name}</td>
+                <td>MWK {exp.amount}</td>
+                <td>{exp.category}</td>
+                <td>{new Date(exp.created_at).toLocaleDateString()}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
     </div>
   </div>
 </Layout>

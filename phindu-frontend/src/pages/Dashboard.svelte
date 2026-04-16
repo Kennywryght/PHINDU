@@ -70,29 +70,32 @@ onMount(async () => {
   .dashboard {
     display: flex;
     flex-direction: column;
-    gap: 1.5rem;
+    gap: 1rem;
   }
 
   .metrics-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 1rem;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 0.75rem;
   }
 
   .chart-card {
-    padding: 1.5rem;
+    padding: 1rem;
   }
 
   .chart {
     display: flex;
     align-items: flex-end;
-    gap: 1rem;
-    height: 200px;
+    gap: 0.5rem;
+    height: 150px;
     margin-top: 1rem;
+    overflow-x:auto;
+    padding-bottom: 0.5rem;
   }
 
   .bar-container {
     flex: 1;
+    min-width: 40px;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -125,7 +128,10 @@ onMount(async () => {
 
   @media (max-width: 480px) {
     .metrics-grid {
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(2, 1fr);
+    }
+    .chart {
+      justify-content: flex-start;
     }
   }
 </style>

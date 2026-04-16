@@ -1,4 +1,3 @@
-console.log('App.svelte loaded, CurrentPage:', CurrentPage);
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { routes } from './routes';
@@ -19,7 +18,6 @@ console.log('App.svelte loaded, CurrentPage:', CurrentPage);
   onMount(() => {
     window.addEventListener('popstate', updateRoute);
     window.navigate = navigate;
-    // Force initial render
     updateRoute();
   });
 

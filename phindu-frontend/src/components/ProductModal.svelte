@@ -19,9 +19,14 @@
     form = { ...product };
   }
 
-  function handleSubmit() {
-    dispatch('save', form);
+function handleSubmit() {
+  const payload = { ...form };
+  // Remove parent_id if it's empty or only whitespace
+  if (!payload.parent_id || payload.parent_id.trim() === '') {
+    delete payload.parent_id;
   }
+  dispatch('save', payload);
+}
 </script>
 
 <div class="modal-overlay" on:click|self={() => dispatch('close')}>
