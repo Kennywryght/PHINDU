@@ -24,24 +24,30 @@
   .layout {
     display: flex;
     min-height: 100vh;
+    width: 100%;
   }
-
   .main {
     flex: 1;
     display: flex;
     flex-direction: column;
     margin-left: var(--sidebar-width);
     transition: margin-left 0.3s ease;
+    width: 100%;
+    max-width: 100%;
   }
-
   .content {
     padding: 1.5rem;
     flex: 1;
+    width: 100%;
+    box-sizing: border-box;
   }
-
   @media (max-width: 768px) {
     .main {
       margin-left: 0;
+      width: 100%;
+    }
+    .content {
+      padding: 0.75rem;
     }
   }
 </style>

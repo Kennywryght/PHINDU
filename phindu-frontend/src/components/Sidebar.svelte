@@ -12,6 +12,7 @@
     { href: '/insights', label: 'Insights', icon: '📈' },
     { href: '/expenses', label: 'Expenses', icon: '💸' },
     { href: '/alerts', label: 'Alerts', icon: '⚠️' },
+    { href: '/sessions', label: 'Sessions', icon: '📅' },
   ];
 
   let currentPath = window.location.pathname;
@@ -32,7 +33,6 @@
       window.location.href = href;
     }
     currentPath = href;
-    // Auto‑close on mobile after navigation
     if (window.innerWidth <= 768) {
       dispatch('close');
     }
@@ -88,7 +88,6 @@
     z-index: 90;
     display: none;
   }
-
   .sidebar {
     position: fixed;
     left: 0;
@@ -104,30 +103,26 @@
     transition: transform 0.3s ease;
     overflow-y: auto;
   }
-
   .sidebar-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
     padding: 0 0.5rem 1.5rem;
   }
-
   .sidebar-header h2 {
     font-weight: 700;
-    font-size: 1.8rem;
+    font-size: 1.6rem;
     color: var(--primary);
   }
-
   .close-btn {
     display: none;
     background: none;
     border: none;
-    font-size: 2rem;
+    font-size: 1.8rem;
     cursor: pointer;
     color: var(--text-light);
     padding: 0.25rem 0.5rem;
   }
-
   .nav-item {
     display: flex;
     align-items: center;
@@ -144,52 +139,34 @@
     transition: all 0.2s;
     white-space: nowrap;
   }
-
   .nav-item:hover {
     background: var(--background);
     color: var(--text);
   }
-
   .nav-item.active {
     background: var(--primary);
     color: white;
   }
-
   .icon {
-    font-size: 1.4rem;
+    font-size: 1.25rem;
   }
-
-  .label {
-    font-size: 1rem;
-  }
-
-  /* Mobile styles */
   @media (max-width: 768px) {
     .backdrop {
       display: block;
     }
-
     .sidebar {
       transform: translateX(-100%);
-      width: 280px;               /* fixed width for mobile */
+      width: 280px;
       max-width: 85vw;
     }
-
     .sidebar.open {
       transform: translateX(0);
       box-shadow: var(--shadow-lg);
     }
-
     .close-btn {
       display: block;
     }
-
-    .nav-item {
-      padding: 1rem 1rem;
-    }
   }
-
-  /* Desktop: sidebar always visible */
   @media (min-width: 769px) {
     .sidebar {
       transform: translateX(0) !important;

@@ -1,4 +1,5 @@
 <script>
+  import { onMount } from 'svelte';
   import Layout from '../components/Layout.svelte';
   import API from '../api/api';
 

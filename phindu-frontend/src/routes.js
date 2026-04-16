@@ -6,6 +6,7 @@ import Insights from './pages/Insights.svelte';
 import Expenses from './pages/Expenses.svelte';
 import Alerts from './pages/Alerts.svelte';
 import Sessions from './pages/Sessions.svelte';
+
 export const routes = {
   '/': Dashboard,
   '/dashboard': Dashboard,
@@ -15,5 +16,5 @@ export const routes = {
   '/insights': Insights,
   '/expenses': Expenses,
   '/alerts': Alerts,
-  '/sessions': Sessions,
+  '/sessions': Sessions
 };
