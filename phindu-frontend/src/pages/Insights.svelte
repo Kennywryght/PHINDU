@@ -71,6 +71,45 @@ onMount(() => {
   fetchTopProducts();
   fetchProfitMargins();
 });  
+
+let peakHours = [];
+let peakLoading = false;
+
+async function fetchPeakHours() {
+  peakLoading = true;
+  try {
+    const res = await API.get('/analytics/peak-hours');
+    peakHours = res.data.hours;
+  } catch (err) {
+    console.error('Peak hours failed', err);
+  } finally {
+    peakLoading = false;
+  }
+}
+
+onMount(() => {
+  // ... existing calls
+  fetchPeakHours();
+});
+let expenseBreakdown = [];
+let breakdownLoading = false;
+
+async function fetchExpenseBreakdown() {
+  breakdownLoading = true;
+  try {
+    const res = await API.get('/analytics/expense-breakdown');
+    expenseBreakdown = res.data;
+  } catch (err) {
+    console.error('Expense breakdown failed', err);
+  } finally {
+    breakdownLoading = false;
+  }
+}
+
+onMount(() => {
+  // ... other calls
+  fetchExpenseBreakdown();
+});
 </script>
 
 <Layout title="Insights">
@@ -149,6 +188,45 @@ onMount(() => {
         </tbody>
         </table>
       </div>
+      {/if}
+    </div>
+    <div class="card">
+      <h3>⏰ Busiest Hours</h3>
+      {#if peakLoading}
+        <p>Loading...</p>
+      {:else}
+        <div class="peak-chart">
+          {#each peakHours as count, hour}
+            <div class="peak-bar-container">
+              <div class="peak-bar" style="height: {Math.max(2, count * 5)}px">
+                <span class="peak-value">{count}</span>
+              </div>
+              <span class="peak-label">{hour}:00</span>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+    <div class="card">
+      <h3>💸 Expenses by Category</h3>
+      {#if breakdownLoading}
+        <p>Loading...</p>
+      {:else if expenseBreakdown.length === 0}
+        <p>No expenses recorded.</p>
+      {:else}
+        <table class="breakdown-table">
+          <thead>
+            <tr><th>Category</th><th>Amount</th></tr>
+          </thead>
+          <tbody>
+            {#each expenseBreakdown as item}
+          <tr>
+            <td>{item.category}</td>
+            <td>MWK {item.total.toFixed(2)}</td>
+          </tr>
+            {/each}
+          </tbody>
+        </table>
       {/if}
     </div>
     <!-- Existing Insights / Fallback -->
@@ -234,5 +312,35 @@ onMount(() => {
 }
 .table-wrapper {
   overflow-x: auto;
+}
+.peak-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.25rem;
+  overflow-x: auto;
+  padding: 1rem 0;
+}
+.peak-bar-container {
+  flex: 1;
+  min-width: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.peak-bar {
+  width: 100%;
+  background: var(--primary);
+  border-radius: 2px 2px 0 0;
+  min-height: 2px;
+  transition: height 0.3s;
+}
+.peak-value {
+  font-size: 0.6rem;
+  color: white;
+  writing-mode: vertical-rl;
+}
+.peak-label {
+  margin-top: 0.25rem;
+  font-size: 0.65rem;
 }
 </style>
