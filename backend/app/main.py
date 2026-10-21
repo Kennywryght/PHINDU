@@ -1,0 +1,106 @@
+"""PHINDU API entry point."""
+
+from fastapi import FastAPI
+from sqlalchemy import text
+from app.db.session import engine, Base
+from app.api.routes import products
+from app.api.routes import sales
+from app.api.routes import analytics
+from app.api.routes import dashboard
+from app.api.routes import expenses
+from app.api.routes import alerts
+from app.api.routes import sessions
+from fastapi.middleware.cors import CORSMiddleware
+from app.api.routes import customers
+from app.api.routes import auth
+from fastapi.security import OAuth2PasswordBearer
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+
+app = FastAPI(
+    title="PHINDU API",
+    swagger_ui_init_oauth={
+        "clientId": "swagger-ui",
+        "clientSecret": "",
+        "appName": "PHINDU API",
+        "usePkceWithAuthorizationCodeGrant": False,
+    },
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",  # Local development
+        "https://phindu-app.netlify.app",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Include routers
+app.include_router(dashboard.router)
+app.include_router(analytics.router)
+app.include_router(products)
+app.include_router(sales)
+app.include_router(expenses.router)
+app.include_router(alerts.router)
+app.include_router(sessions.router)
+app.include_router(customers.router)
+app.include_router(auth.router)
+
+# Create tables
+Base.metadata.create_all(bind=engine)
+
+# Ensure existing SQLite DB schema has any new columns
+if engine.url.drivername == "sqlite":
+    with engine.begin() as conn:
+        # ── sale_items columns ─────────────────────────────────────
+        existing_columns = [row[1] for row in conn.execute(text("PRAGMA table_info(sale_items)"))]
+        if "cost_price" not in existing_columns:
+            conn.execute(text("ALTER TABLE sale_items ADD COLUMN cost_price FLOAT DEFAULT 0"))
+        # 🔧 FIX: shop_id was added to the model but never migrated
+        if "shop_id" not in existing_columns:
+            conn.execute(text("ALTER TABLE sale_items ADD COLUMN shop_id VARCHAR REFERENCES shops(id)"))
+            conn.execute(text("""
+                UPDATE sale_items
+                SET shop_id = (SELECT shop_id FROM sales WHERE sales.id = sale_items.sale_id)
+                WHERE shop_id IS NULL
+            """))
+
+        # ── products columns ───────────────────────────────────────
+        existing_columns = [row[1] for row in conn.execute(text("PRAGMA table_info(products)"))]
+        if "is_deleted" not in existing_columns:
+            conn.execute(text("ALTER TABLE products ADD COLUMN is_deleted BOOLEAN DEFAULT 0"))
+        if "archived" not in existing_columns:
+            conn.execute(text("ALTER TABLE products ADD COLUMN archived BOOLEAN DEFAULT 0"))
+
+        # ── sales columns – add session_id ─────────────────────────
+        existing_columns = [row[1] for row in conn.execute(text("PRAGMA table_info(sales)"))]
+        if "session_id" not in existing_columns:
+            conn.execute(text("ALTER TABLE sales ADD COLUMN session_id VARCHAR REFERENCES sessions(id)"))
+
+        # ── expenses columns – add session_id ──────────────────────
+        existing_columns = [row[1] for row in conn.execute(text("PRAGMA table_info(expenses)"))]
+        if "session_id" not in existing_columns:
+            conn.execute(text("ALTER TABLE expenses ADD COLUMN session_id VARCHAR REFERENCES sessions(id)"))
+
+        # ── stock_batches columns – add shop_id ────────────────────  🔧 NEW
+        existing_columns = [row[1] for row in conn.execute(text("PRAGMA table_info(stock_batches)"))]
+        if "shop_id" not in existing_columns:
+            conn.execute(text("ALTER TABLE stock_batches ADD COLUMN shop_id VARCHAR REFERENCES shops(id)"))
+            conn.execute(text("""
+                UPDATE stock_batches
+                SET shop_id = (SELECT shop_id FROM products WHERE products.id = stock_batches.product_id)
+                WHERE shop_id IS NULL
+            """))
+
+
+@app.get("/")
+def root():
+    return {"message": "PHINDU BACKEND RUNNING small businesses sales & insights  🔥"}
+
+
+@app.get("/ping")
+def ping():
+    return {"ping": "pong"}
