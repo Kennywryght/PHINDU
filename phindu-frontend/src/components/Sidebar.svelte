@@ -1,33 +1,41 @@
 <script>
-  import { createEventDispatcher, onMount, onDestroy } from 'svelte';
+  import { createEventDispatcher, onMount } from 'svelte';
+  import {
+    LayoutDashboard,
+    Package,
+    ShoppingCart,
+    DollarSign,
+    TrendingUp,
+    Receipt,
+    AlertTriangle,
+    Clock,
+    CreditCard,
+    X,
+  } from 'lucide-svelte';
 
   export let sidebarOpen = false;
   const dispatch = createEventDispatcher();
 
   const navItems = [
-    { href: '/', label: 'Dashboard', icon: '📊' },
-    { href: '/products', label: 'Products', icon: '📦' },
-    { href: '/pos', label: 'Point of Sale', icon: '🛒' },
-    { href: '/sales', label: 'Sales', icon: '💰' },
-    { href: '/insights', label: 'Insights', icon: '📈' },
-    { href: '/expenses', label: 'Expenses', icon: '💸' },
-    { href: '/alerts', label: 'Alerts', icon: '⚠️' },
-    { href: '/sessions', label: 'Sessions', icon: '📅' },
+    { href: '/', label: 'Dashboard', icon: LayoutDashboard },
+    { href: '/products', label: 'Products', icon: Package },
+    { href: '/pos', label: 'Point of Sale', icon: ShoppingCart },
+    { href: '/sales', label: 'Sales', icon: DollarSign },
+    { href: '/insights', label: 'Insights', icon: TrendingUp },
+    { href: '/expenses', label: 'Expenses', icon: Receipt },
+    { href: '/alerts', label: 'Alerts', icon: AlertTriangle },
+    { href: '/sessions', label: 'Sessions', icon: Clock },
+    { href: '/credit', label: 'Credit / Loans', icon: CreditCard },
   ];
 
-  let currentPath = window.location.pathname;
+  let currentPath = typeof window !== 'undefined' ? window.location.pathname : '/';
 
   function updateCurrentPath() {
     currentPath = window.location.pathname;
   }
 
-  onMount(() => {
-    window.addEventListener('popstate', updateCurrentPath);
-    return () => window.removeEventListener('popstate', updateCurrentPath);
-  });
-
   function navigate(href) {
-    if (window.navigate) {
+    if (typeof window !== 'undefined' && window.navigate) {
       window.navigate(href);
     } else {
       window.location.href = href;
@@ -48,29 +56,53 @@
     }
   }
 
+  // ✅ Single onMount (was duplicated before)
   onMount(() => {
+    window.addEventListener('popstate', updateCurrentPath);
     window.addEventListener('keydown', handleKeydown);
-    return () => window.removeEventListener('keydown', handleKeydown);
+    return () => {
+      window.removeEventListener('popstate', updateCurrentPath);
+      window.removeEventListener('keydown', handleKeydown);
+    };
   });
 </script>
 
 {#if sidebarOpen}
-  <div class="backdrop" on:click={closeSidebar}></div>
+  <div
+    class="backdrop"
+    role="button"
+    tabindex="0"
+    aria-label="Close menu"
+    on:click={closeSidebar}
+    on:keydown={(e) => e.key === 'Enter' && closeSidebar()}
+  ></div>
 {/if}
 
 <aside class="sidebar" class:open={sidebarOpen}>
   <div class="sidebar-header">
     <h2>PHINDU</h2>
-    <button class="close-btn" on:click={closeSidebar} aria-label="Close menu">✕</button>
+    <button
+      class="close-btn"
+      on:click={closeSidebar}
+      aria-label="Close menu"
+      type="button"
+    >
+      <X size={22} />
+    </button>
   </div>
+
   <nav>
     {#each navItems as item}
+      {@const Icon = item.icon}
       <button
         class="nav-item"
         class:active={currentPath === item.href}
         on:click={() => navigate(item.href)}
+        type="button"
       >
-        <span class="icon">{item.icon}</span>
+        <span class="icon">
+          <Icon size={20} strokeWidth={1.75} />
+        </span>
         <span class="label">{item.label}</span>
       </button>
     {/each}
@@ -80,93 +112,133 @@
 <style>
   .backdrop {
     position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: rgba(0, 0, 0, 0.4);
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
     z-index: 90;
     display: none;
   }
+
   .sidebar {
     position: fixed;
     left: 0;
     top: 0;
     bottom: 0;
-    width: var(--sidebar-width);
-    background: var(--surface);
-    border-right: 1px solid var(--border);
+    width: var(--sidebar-width, 240px);
+    background: var(--surface, #ffffff);
+    border-right: 1px solid var(--border, #e5e7eb);
     display: flex;
     flex-direction: column;
-    padding: 1.5rem 0.75rem;
+    padding: 1.25rem 0.75rem;
     z-index: 100;
     transition: transform 0.3s ease;
     overflow-y: auto;
+    overscroll-behavior: contain;
   }
+
   .sidebar-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
     padding: 0 0.5rem 1.5rem;
   }
+
   .sidebar-header h2 {
     font-weight: 700;
-    font-size: 1.6rem;
-    color: var(--primary);
+    font-size: 1.5rem;
+    color: var(--primary, #0f6b3e);
+    letter-spacing: 0.5px;
   }
+
   .close-btn {
     display: none;
     background: none;
     border: none;
-    font-size: 1.8rem;
     cursor: pointer;
-    color: var(--text-light);
-    padding: 0.25rem 0.5rem;
+    color: var(--text-light, #6b7280);
+    padding: 0.4rem;
+    border-radius: 8px;
+    line-height: 0;
+    transition: background 0.15s;
   }
+
+  .close-btn:hover {
+    background: var(--background, #f9fafb);
+  }
+
+  nav {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
   .nav-item {
     display: flex;
     align-items: center;
     gap: 0.75rem;
-    padding: 0.9rem 1rem;
-    margin: 0.25rem 0;
-    border-radius: var(--radius);
-    color: var(--text-light);
-    width: 100%;
+    padding: 0.75rem 0.9rem;
+    border-radius: 10px;
+    color: var(--text-light, #6b7280);
     background: none;
     border: none;
     cursor: pointer;
     text-align: left;
-    transition: all 0.2s;
+    width: 100%;
+    font-size: 0.92rem;
+    font-weight: 500;
+    transition: background 0.15s, color 0.15s;
     white-space: nowrap;
   }
+
   .nav-item:hover {
-    background: var(--background);
-    color: var(--text);
+    background: var(--background, #f9fafb);
+    color: var(--text, #111827);
   }
+
   .nav-item.active {
-    background: var(--primary);
-    color: white;
+    background: var(--primary, #0f6b3e);
+    color: #ffffff;
   }
+
+  .nav-item.active .icon {
+    color: #ffffff;
+  }
+
   .icon {
-    font-size: 1.25rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    color: inherit;
   }
+
+  .label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* ============ MOBILE ============ */
   @media (max-width: 768px) {
     .backdrop {
       display: block;
     }
+
     .sidebar {
       transform: translateX(-100%);
       width: 280px;
       max-width: 85vw;
     }
+
     .sidebar.open {
       transform: translateX(0);
-      box-shadow: var(--shadow-lg);
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.15),
+        0 10px 10px -5px rgba(0, 0, 0, 0.1);
     }
+
     .close-btn {
-      display: block;
+      display: inline-flex;
     }
   }
+
   @media (min-width: 769px) {
     .sidebar {
       transform: translateX(0) !important;

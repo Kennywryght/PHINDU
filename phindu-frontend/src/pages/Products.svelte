@@ -1,5 +1,6 @@
-\<script>
+<script>
   import { onMount } from 'svelte';
+  import { Plus, Pencil, Trash2, Archive, RotateCcw, PackageX } from 'lucide-svelte';
   import Layout from '../components/Layout.svelte';
   import ProductModal from '../components/ProductModal.svelte';
   import API from '../api/api';
@@ -20,17 +21,15 @@
         url += '?include_deleted=true';
       }
       const res = await API.get(url);
-      // Filter client-side for other tabs (backend only filters deleted)
       let filtered = res.data;
       if (filter === 'active') {
-        filtered = filtered.filter(p => !p.archived && !p.is_deleted);
+        filtered = filtered.filter((p) => !p.archived && !p.is_deleted);
       } else if (filter === 'archived') {
-        filtered = filtered.filter(p => p.archived && !p.is_deleted);
+        filtered = filtered.filter((p) => p.archived && !p.is_deleted);
       } else if (filter === 'deleted') {
-        filtered = filtered.filter(p => p.is_deleted);
+        filtered = filtered.filter((p) => p.is_deleted);
       } else {
-        // 'all' shows everything except deleted (or include if you want)
-        filtered = filtered.filter(p => !p.is_deleted);
+        filtered = filtered.filter((p) => !p.is_deleted);
       }
       products = filtered;
     } catch (err) {
@@ -40,7 +39,6 @@
     }
   }
 
-  // Reactively refetch when filter changes
   $: filter, fetchProducts();
 
   async function handleSave(productData) {
@@ -108,16 +106,27 @@
 <Layout title="Products">
   <div class="products-header">
     <div class="filter-tabs">
-      <button class:active={filter === 'all'} on:click={() => filter = 'all'}>All</button>
-      <button class:active={filter === 'active'} on:click={() => filter = 'active'}>Active</button>
-      <button class:active={filter === 'archived'} on:click={() => filter = 'archived'}>Archived</button>
-      <button class:active={filter === 'deleted'} on:click={() => filter = 'deleted'}>Deleted</button>
+      <button type="button" class:active={filter === 'all'} on:click={() => (filter = 'all')}>All</button>
+      <button type="button" class:active={filter === 'active'} on:click={() => (filter = 'active')}>Active</button>
+      <button type="button" class:active={filter === 'archived'} on:click={() => (filter = 'archived')}>Archived</button>
+      <button type="button" class:active={filter === 'deleted'} on:click={() => (filter = 'deleted')}>Deleted</button>
     </div>
-    <button class="btn btn-primary" on:click={() => openModal()}>+ Add Product</button>
+    <button class="btn btn-primary add-btn" on:click={() => openModal()} type="button">
+      <Plus size={18} strokeWidth={2} />
+      <span>Add Product</span>
+    </button>
   </div>
 
   {#if loading}
-    <p>Loading products...</p>
+    <p class="loading-text">Loading products...</p>
+  {:else if products.length === 0}
+    <div class="empty-state">
+      <PackageX size={48} strokeWidth={1.25} />
+      <p>No products in this category</p>
+      <button class="btn btn-primary" on:click={() => openModal()} type="button">
+        <Plus size={16} strokeWidth={2} /> Add your first product
+      </button>
+    </div>
   {:else}
     <div class="products-container">
       <!-- Desktop Table -->
@@ -130,39 +139,45 @@
               <th>Price</th>
               <th>Stock</th>
               <th>Status</th>
-              <th>Actions</th>
+              <th class="actions-col">Actions</th>
             </tr>
           </thead>
           <tbody>
             {#each products as product}
               <tr>
-                <td>{product.name}</td>
-                <td>{product.category}</td>
-                <td>MWK {product.selling_price}</td>
-                <td>{product.stock_qty}</td>
-                <td>
+                <td data-label="Name"><strong>{product.name}</strong></td>
+                <td data-label="Category">{product.category || '—'}</td>
+                <td data-label="Price">MWK {product.selling_price?.toLocaleString()}</td>
+                <td data-label="Stock">{product.stock_qty}</td>
+                <td data-label="Status">
                   <span class="status" class:archived={product.archived} class:deleted={product.is_deleted}>
-                    {#if product.is_deleted}
-                      Deleted
-                    {:else if product.archived}
-                      Archived
-                    {:else}
-                      Active
-                    {/if}
+                    {#if product.is_deleted}Deleted{:else if product.archived}Archived{:else}Active{/if}
                   </span>
                 </td>
-                <td class="actions">
-                  {#if product.is_deleted}
-                    <button on:click={() => handleRestore(product.id)}>↩️ Restore</button>
-                  {:else}
-                    <button on:click={() => openModal(product)}>✏️</button>
-                    {#if product.archived}
-                      <button on:click={() => handleUnarchive(product.id)}>↩️ Unarchive</button>
+                <td data-label="Actions">
+                  <div class="actions">
+                    {#if product.is_deleted}
+                      <button class="action-btn" on:click={() => handleRestore(product.id)} title="Restore" type="button">
+                        <RotateCcw size={16} strokeWidth={2} />
+                      </button>
                     {:else}
-                      <button on:click={() => handleArchive(product.id)}>📦 Archive</button>
+                      <button class="action-btn" on:click={() => openModal(product)} title="Edit" type="button">
+                        <Pencil size={16} strokeWidth={2} />
+                      </button>
+                      {#if product.archived}
+                        <button class="action-btn" on:click={() => handleUnarchive(product.id)} title="Unarchive" type="button">
+                          <RotateCcw size={16} strokeWidth={2} />
+                        </button>
+                      {:else}
+                        <button class="action-btn" on:click={() => handleArchive(product.id)} title="Archive" type="button">
+                          <Archive size={16} strokeWidth={2} />
+                        </button>
+                      {/if}
+                      <button class="action-btn danger" on:click={() => handleDelete(product.id)} title="Delete" type="button">
+                        <Trash2 size={16} strokeWidth={2} />
+                      </button>
                     {/if}
-                    <button class="danger" on:click={() => handleDelete(product.id)}>🗑️</button>
-                  {/if}
+                  </div>
                 </td>
               </tr>
             {/each}
@@ -170,38 +185,42 @@
         </table>
       </div>
 
-      <!-- Mobile Cards (hidden on desktop) -->
+      <!-- Mobile Cards -->
       <div class="mobile-cards">
         {#each products as product}
           <div class="product-card">
             <div class="card-header">
               <h3>{product.name}</h3>
               <span class="status" class:archived={product.archived} class:deleted={product.is_deleted}>
-                {#if product.is_deleted}
-                  Deleted
-                {:else if product.archived}
-                  Archived
-                {:else}
-                  Active
-                {/if}
+                {#if product.is_deleted}Deleted{:else if product.archived}Archived{:else}Active{/if}
               </span>
             </div>
             <div class="details">
-              <div><span>Category:</span> {product.category}</div>
-              <div><span>Price:</span> MWK {product.selling_price}</div>
-              <div><span>Stock:</span> {product.stock_qty}</div>
+              <div><span>Category</span><strong>{product.category || '—'}</strong></div>
+              <div><span>Price</span><strong>MWK {product.selling_price?.toLocaleString()}</strong></div>
+              <div><span>Stock</span><strong>{product.stock_qty}</strong></div>
             </div>
             <div class="card-actions">
               {#if product.is_deleted}
-                <button on:click={() => handleRestore(product.id)}>↩️ Restore</button>
+                <button class="action-btn full" on:click={() => handleRestore(product.id)} type="button">
+                  <RotateCcw size={16} strokeWidth={2} /> Restore
+                </button>
               {:else}
-                <button on:click={() => openModal(product)}>Edit</button>
+                <button class="action-btn full" on:click={() => openModal(product)} type="button">
+                  <Pencil size={16} strokeWidth={2} /> Edit
+                </button>
                 {#if product.archived}
-                  <button on:click={() => handleUnarchive(product.id)}>Unarchive</button>
+                  <button class="action-btn full" on:click={() => handleUnarchive(product.id)} type="button">
+                    <RotateCcw size={16} strokeWidth={2} /> Unarchive
+                  </button>
                 {:else}
-                  <button on:click={() => handleArchive(product.id)}>Archive</button>
+                  <button class="action-btn full" on:click={() => handleArchive(product.id)} type="button">
+                    <Archive size={16} strokeWidth={2} /> Archive
+                  </button>
                 {/if}
-                <button class="danger" on:click={() => handleDelete(product.id)}>Delete</button>
+                <button class="action-btn full danger" on:click={() => handleDelete(product.id)} type="button">
+                  <Trash2 size={16} strokeWidth={2} /> Delete
+                </button>
               {/if}
             </div>
           </div>
@@ -213,7 +232,7 @@
   {#if showModal}
     <ProductModal
       product={editingProduct}
-      on:save={e => handleSave(e.detail)}
+      on:save={(e) => handleSave(e.detail)}
       on:close={closeModal}
     />
   {/if}
@@ -226,58 +245,100 @@
     align-items: center;
     margin-bottom: 1.5rem;
     flex-wrap: wrap;
-    gap: 1rem;
+    gap: 0.75rem;
   }
 
   .filter-tabs {
     display: flex;
-    gap: 0.5rem;
+    gap: 0.35rem;
+    flex-wrap: wrap;
   }
 
   .filter-tabs button {
-    padding: 0.5rem 1rem;
-    border-radius: var(--radius);
-    background: var(--surface);
-    border: 1px solid var(--border);
+    padding: 0.45rem 0.9rem;
+    border-radius: 8px;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
     cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--text, #111827);
+    transition: all 0.15s;
+  }
+
+  .filter-tabs button:hover {
+    border-color: var(--primary, #0f6b3e);
+    color: var(--primary, #0f6b3e);
   }
 
   .filter-tabs button.active {
-    background: var(--primary);
+    background: var(--primary, #0f6b3e);
     color: white;
-    border-color: var(--primary);
+    border-color: var(--primary, #0f6b3e);
+  }
+
+  .add-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.55rem 1rem;
+    border-radius: 8px;
+    background: var(--primary, #0f6b3e);
+    color: white;
+    border: none;
+    cursor: pointer;
+    font-weight: 500;
+    font-size: 0.9rem;
+    transition: background 0.15s;
+  }
+
+  .add-btn:hover {
+    background: var(--primary-dark, #0a4f2e);
   }
 
   .table-wrapper {
     overflow-x: auto;
-    background: var(--surface);
-    border-radius: var(--radius);
-    border: 1px solid var(--border);
+    background: var(--surface, #fff);
+    border-radius: 10px;
+    border: 1px solid var(--border, #e5e7eb);
   }
 
   .products-table {
     width: 100%;
     border-collapse: collapse;
+    font-size: 0.9rem;
   }
 
   .products-table th {
     text-align: left;
-    padding: 1rem;
-    background: var(--background);
+    padding: 0.85rem 1rem;
+    background: var(--background, #f9fafb);
     font-weight: 600;
+    color: var(--text-light, #6b7280);
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    white-space: nowrap;
   }
 
   .products-table td {
-    padding: 1rem;
-    border-top: 1px solid var(--border);
+    padding: 0.9rem 1rem;
+    border-top: 1px solid var(--border, #e5e7eb);
+    color: var(--text, #111827);
+  }
+
+  .actions-col {
+    width: 140px;
   }
 
   .status {
-    padding: 0.25rem 0.5rem;
+    display: inline-block;
+    padding: 0.2rem 0.55rem;
     border-radius: 20px;
     background: #dcfce7;
     color: #166534;
-    font-size: 0.8rem;
+    font-size: 0.75rem;
+    font-weight: 600;
   }
 
   .status.archived {
@@ -292,66 +353,132 @@
 
   .actions {
     display: flex;
-    gap: 0.5rem;
+    gap: 0.25rem;
   }
 
-  .actions button {
-    padding: 0.25rem 0.5rem;
+  .action-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+    padding: 0.4rem 0.5rem;
+    background: transparent;
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 6px;
     cursor: pointer;
+    color: var(--text, #111827);
+    transition: all 0.15s;
+    font-size: 0.85rem;
+    font-weight: 500;
   }
 
-  .danger {
-    color: var(--danger);
+  .action-btn:hover {
+    background: var(--background, #f9fafb);
+    border-color: var(--primary, #0f6b3e);
+    color: var(--primary, #0f6b3e);
+  }
+
+  .action-btn.danger:hover {
+    border-color: #dc2626;
+    color: #dc2626;
+    background: #fef2f2;
+  }
+
+  .action-btn.full {
+    flex: 1;
+    padding: 0.55rem;
+  }
+
+  .loading-text {
+    text-align: center;
+    padding: 2rem;
+    color: var(--text-light, #6b7280);
+  }
+
+  .empty-state {
+    text-align: center;
+    padding: 3rem 1rem;
+    color: var(--text-light, #6b7280);
+  }
+
+  .empty-state p {
+    margin: 1rem 0;
+    font-size: 1rem;
   }
 
   .mobile-cards {
     display: none;
     flex-direction: column;
-    gap: 1rem;
+    gap: 0.75rem;
   }
 
   .product-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 10px;
     padding: 1rem;
   }
 
   .card-header {
     display: flex;
     justify-content: space-between;
-    align-items: center;
+    align-items: flex-start;
+    gap: 0.5rem;
     margin-bottom: 0.75rem;
+  }
+
+  .card-header h3 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 0;
+    color: var(--text, #111827);
+  }
+
+  .details {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin-bottom: 1rem;
   }
 
   .details div {
     display: flex;
     justify-content: space-between;
-    margin-bottom: 0.5rem;
+    align-items: center;
+    font-size: 0.9rem;
   }
 
   .details span {
-    color: var(--text-light);
+    color: var(--text-light, #6b7280);
+  }
+
+  .details strong {
+    color: var(--text, #111827);
+    font-weight: 600;
   }
 
   .card-actions {
     display: flex;
-    gap: 0.5rem;
-    margin-top: 1rem;
+    gap: 0.4rem;
+    flex-wrap: wrap;
   }
 
-  .card-actions button {
-    flex: 1;
-    padding: 0.5rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    cursor: pointer;
-  }
-
+  /* ============ MOBILE ============ */
   @media (max-width: 768px) {
+    .products-header {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .add-btn {
+      justify-content: center;
+      padding: 0.65rem;
+    }
+
     .table-wrapper {
       display: none;
     }
+
     .mobile-cards {
       display: flex;
     }

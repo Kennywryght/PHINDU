@@ -1,0 +1,18 @@
+{
+  "dashboard": "Dashboardi",
+  "products": "Zinthu",
+  "point_of_sale": "Malo Ogulitsila",
+  "sales": "Zogulitsa",
+  "insights": "Zowona",
+  "expenses": "Ndalama Zomwe Zagwiritsidwa",
+  "alerts": "Zidziwitso",
+  "sessions": "Masiku Ogulitsa",
+  "credit_loans": "Ngongole",
+  "total_revenue": "Ndalama Zonse",
+  "total_cost": "Mtengo Wakatundu yense",
+  "profit": "Phindu",
+  "items_sold": "Zinthu Zogulitsidwa",
+  "profit_margin": "Phindu %",
+  "add_product": "Onjezerani katundu",
+  "logout": "Tulukani"
+}

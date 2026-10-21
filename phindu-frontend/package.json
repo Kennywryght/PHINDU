@@ -17,10 +17,14 @@
     "postcss-nesting": "^14.0.0",
     "svelte": "^5.55.1",
     "tailwindcss": "^4.2.2",
-    "vite": "^8.0.4"
+    "vite": "^8.0.4",
+    "vite-plugin-pwa": "^1.2.0"
   },
   "dependencies": {
     "axios": "^1.15.0",
-    "chart.js": "^4.5.1"
+    "chart.js": "^4.5.1",
+    "lucide-svelte": "^1.0.1",
+    "svelte-i18n": "^4.0.1",
+    "xlsx": "^0.18.5"
   }
 }

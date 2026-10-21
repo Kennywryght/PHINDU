@@ -1,0 +1,18 @@
+{
+  "dashboard": "Dashboard",
+  "products": "Products",
+  "point_of_sale": "Point of Sale",
+  "sales": "Sales",
+  "insights": "Insights",
+  "expenses": "Expenses",
+  "alerts": "Alerts",
+  "sessions": "Sessions",
+  "credit_loans": "Credit/Loans",
+  "total_revenue": "Total Revenue",
+  "total_cost": "Total Cost",
+  "profit": "Profit",
+  "items_sold": "Items Sold",
+  "profit_margin": "Profit Margin",
+  "add_product": "Add Product",
+  "logout": "Logout"
+}

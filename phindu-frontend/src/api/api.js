@@ -1,7 +1,9 @@
 import axios from "axios";
 
+// 🔧 TEMPORARY: hardcoded to localhost for development
+// TODO Sprint 4: restore env-based URL and delete this hardcode
 const API = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || "https://phindu-backend-1.onrender.com/",
+  baseURL: "http://localhost:8000",
   headers: {
     "Content-Type": "application/json"
   }
@@ -16,4 +18,4 @@ API.interceptors.response.use(
   }
 );
 
-export default API;   // <-- THIS LINE IS CRITICAL
+export default API;

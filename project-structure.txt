@@ -1,0 +1,130 @@
+﻿DIR  \.git
+DIR  \.venv
+DIR  \.vscode
+DIR  \backend
+DIR  \phindu-frontend
+FILE \project-structure.txt  (0 KB)
+FILE \README.md  (0 KB)
+FILE \.vscode\settings.json  (0.2 KB)
+DIR  \backend\.git
+DIR  \backend\app
+FILE \backend\.env  (0.2 KB)
+FILE \backend\phindu.db  (88 KB)
+FILE \backend\requirements.txt  (0.1 KB)
+FILE \backend\runtime.txt  (0 KB)
+DIR  \backend\app\api
+DIR  \backend\app\core
+DIR  \backend\app\db
+DIR  \backend\app\schemas
+DIR  \backend\app\services
+DIR  \backend\app\utils
+DIR  \backend\app\__pycache__
+FILE \backend\app\main.py  (3.2 KB)
+FILE \backend\app\__init__.py  (0 KB)
+DIR  \backend\app\api\routes
+DIR  \backend\app\api\__pycache__
+FILE \backend\app\api\dependencies.py  (0.3 KB)
+FILE \backend\app\api\__init__.py  (0 KB)
+DIR  \backend\app\api\routes\__pycache__
+FILE \backend\app\api\routes\alerts.py  (0.9 KB)
+FILE \backend\app\api\routes\analytics.py  (6 KB)
+FILE \backend\app\api\routes\auth.py  (3.3 KB)
+FILE \backend\app\api\routes\customers.py  (2.5 KB)
+FILE \backend\app\api\routes\dashboard.py  (2.8 KB)
+FILE \backend\app\api\routes\expenses.py  (1.7 KB)
+FILE \backend\app\api\routes\products.py  (5.5 KB)
+FILE \backend\app\api\routes\sales.py  (6.1 KB)
+FILE \backend\app\api\routes\sessions.py  (2.6 KB)
+FILE \backend\app\api\routes\__init__.py  (0.2 KB)
+DIR  \backend\app\core\__pycache__
+FILE \backend\app\core\config.py  (0.3 KB)
+FILE \backend\app\core\security.py  (1.2 KB)
+FILE \backend\app\core\__init__.py  (0 KB)
+DIR  \backend\app\db\models
+DIR  \backend\app\db\__pycache__
+FILE \backend\app\db\base.py  (0.3 KB)
+FILE \backend\app\db\session.py  (0.6 KB)
+FILE \backend\app\db\__init__.py  (0 KB)
+DIR  \backend\app\db\models\__pycache__
+FILE \backend\app\db\models\business.py  (0 KB)
+FILE \backend\app\db\models\customer.py  (0.8 KB)
+FILE \backend\app\db\models\expense.py  (0.7 KB)
+FILE \backend\app\db\models\price_history.py  (0.5 KB)
+FILE \backend\app\db\models\product.py  (1.2 KB)
+FILE \backend\app\db\models\sale.py  (1.8 KB)
+FILE \backend\app\db\models\session.py  (0.9 KB)
+FILE \backend\app\db\models\shop.py  (1 KB)
+FILE \backend\app\db\models\stock.py  (0.8 KB)
+FILE \backend\app\db\models\user.py  (0.8 KB)
+FILE \backend\app\db\models\__init__.py  (0 KB)
+DIR  \backend\app\schemas\__pycache__
+FILE \backend\app\schemas\product.py  (1.3 KB)
+FILE \backend\app\schemas\sale.py  (0.7 KB)
+FILE \backend\app\schemas\__init__.py  (0 KB)
+FILE \backend\app\services\__init__.py  (0 KB)
+DIR  \backend\app\utils\__pycache__
+FILE \backend\app\utils\conversion.py  (0.5 KB)
+FILE \backend\app\utils\__init__.py  (0 KB)
+DIR  \phindu-frontend\.vscode
+DIR  \phindu-frontend\dist
+DIR  \phindu-frontend\mobile
+DIR  \phindu-frontend\node_modules
+DIR  \phindu-frontend\public
+DIR  \phindu-frontend\src
+FILE \phindu-frontend\.env.production  (0.1 KB)
+FILE \phindu-frontend\.gitignore  (0.2 KB)
+FILE \phindu-frontend\index.html  (0.4 KB)
+FILE \phindu-frontend\jsconfig.json  (0.9 KB)
+FILE \phindu-frontend\package-lock.json  (270.2 KB)
+FILE \phindu-frontend\package.json  (0.6 KB)
+FILE \phindu-frontend\postcss.config.js  (0.1 KB)
+FILE \phindu-frontend\README.md  (2.5 KB)
+FILE \phindu-frontend\svelte.config.js  (0.1 KB)
+FILE \phindu-frontend\tailwind.config.js  (0.2 KB)
+FILE \phindu-frontend\vite.config.js  (1.5 KB)
+FILE \phindu-frontend\.vscode\extensions.json  (0 KB)
+DIR  \phindu-frontend\mobile\screens
+DIR  \phindu-frontend\mobile\services
+FILE \phindu-frontend\mobile\App.js  (0 KB)
+FILE \phindu-frontend\mobile\package.json  (0 KB)
+FILE \phindu-frontend\mobile\services\api.js  (0 KB)
+FILE \phindu-frontend\public\favicon.svg  (9.3 KB)
+FILE \phindu-frontend\public\icons.svg  (4.9 KB)
+FILE \phindu-frontend\public\logo-192.png  (463.6 KB)
+DIR  \phindu-frontend\src\api
+DIR  \phindu-frontend\src\assets
+DIR  \phindu-frontend\src\components
+DIR  \phindu-frontend\src\i18n
+DIR  \phindu-frontend\src\lib
+DIR  \phindu-frontend\src\pages
+DIR  \phindu-frontend\src\stores
+FILE \phindu-frontend\src\app.css  (2.3 KB)
+FILE \phindu-frontend\src\App.svelte  (1.5 KB)
+FILE \phindu-frontend\src\main.js  (0.2 KB)
+FILE \phindu-frontend\src\routes.js  (0.8 KB)
+FILE \phindu-frontend\src\api\api.js  (0.4 KB)
+FILE \phindu-frontend\src\assets\hero.png  (43.9 KB)
+FILE \phindu-frontend\src\assets\svelte.svg  (1.9 KB)
+FILE \phindu-frontend\src\assets\vite.svg  (8.5 KB)
+FILE \phindu-frontend\src\components\CartItem.svelte  (1.5 KB)
+FILE \phindu-frontend\src\components\Layout.svelte  (2.6 KB)
+FILE \phindu-frontend\src\components\MetricCard.svelte  (0.9 KB)
+FILE \phindu-frontend\src\components\ProductModal.svelte  (3.7 KB)
+FILE \phindu-frontend\src\components\Sidebar.svelte  (4.2 KB)
+FILE \phindu-frontend\src\components\Topbar.svelte  (8 KB)
+FILE \phindu-frontend\src\i18n\en.json  (0.5 KB)
+FILE \phindu-frontend\src\i18n\ny.json  (0.5 KB)
+FILE \phindu-frontend\src\lib\Counter.svelte  (0.1 KB)
+FILE \phindu-frontend\src\pages\Alerts.svelte  (4.1 KB)
+FILE \phindu-frontend\src\pages\Credit.svelte  (2.8 KB)
+FILE \phindu-frontend\src\pages\Dashboard.svelte  (5.8 KB)
+FILE \phindu-frontend\src\pages\Expenses.svelte  (4.7 KB)
+FILE \phindu-frontend\src\pages\Insights.svelte  (9.6 KB)
+FILE \phindu-frontend\src\pages\Login.svelte  (7.2 KB)
+FILE \phindu-frontend\src\pages\POS.svelte  (9.3 KB)
+FILE \phindu-frontend\src\pages\Products.svelte  (9.4 KB)
+FILE \phindu-frontend\src\pages\Register.svelte  (9.4 KB)
+FILE \phindu-frontend\src\pages\Sales.svelte  (11.2 KB)
+FILE \phindu-frontend\src\pages\Sessions.svelte  (8.2 KB)
+FILE \phindu-frontend\src\stores\auth.js  (2 KB)
+FILE \phindu-frontend\src\stores\store.js  (0 KB)

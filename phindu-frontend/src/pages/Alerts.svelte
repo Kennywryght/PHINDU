@@ -1,5 +1,6 @@
 <script>
   import { onMount } from 'svelte';
+  import { AlertTriangle, CheckCircle2, Package } from 'lucide-svelte';
   import Layout from '../components/Layout.svelte';
   import API from '../api/api';
 
@@ -23,17 +24,20 @@
 <Layout title="Alerts">
   <div class="alerts-page">
     <div class="page-header">
-      <h2>⚠️ Low Stock Alerts</h2>
+      <h2>
+        <AlertTriangle size={22} strokeWidth={2} />
+        Low Stock Alerts
+      </h2>
       <p class="subtitle">Products that need restocking soon</p>
     </div>
 
     {#if loading}
-      <div class="loading">Checking inventory...</div>
+      <div class="state-box">Checking inventory...</div>
     {:else if error}
-      <div class="error">{error}</div>
+      <div class="state-box error">{error}</div>
     {:else if lowStock.length === 0}
       <div class="card success-card">
-        <span class="success-icon">✅</span>
+        <CheckCircle2 size={48} strokeWidth={1.5} class="success-icon" />
         <h3>All products are well stocked</h3>
         <p>No low stock alerts at this time.</p>
       </div>
@@ -42,7 +46,10 @@
         {#each lowStock as product}
           <div class="alert-card">
             <div class="alert-badge">LOW STOCK</div>
-            <h3>{product.name}</h3>
+            <h3>
+              <Package size={18} strokeWidth={2} />
+              {product.name}
+            </h3>
             <div class="details">
               <div class="detail-item">
                 <span>Current Stock</span>
@@ -54,11 +61,15 @@
               </div>
               <div class="detail-item">
                 <span>Selling Price</span>
-                <strong>MWK {product.selling_price}</strong>
+                <strong>MWK {product.selling_price?.toLocaleString()}</strong>
               </div>
             </div>
             <div class="card-actions">
-              <button class="btn btn-secondary" on:click={() => window.location.href = '/products'}>
+              <button
+                class="btn btn-primary"
+                on:click={() => (window.location.href = '/products')}
+                type="button"
+              >
                 Manage Product
               </button>
             </div>
@@ -74,111 +85,138 @@
     max-width: 1200px;
     margin: 0 auto;
   }
-
   .page-header {
-    margin-bottom: 2rem;
+    margin-bottom: 1.5rem;
   }
-
+  .page-header h2 {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0;
+    font-size: 1.2rem;
+    font-weight: 600;
+    color: var(--text, #111827);
+  }
   .subtitle {
-    color: var(--text-light);
+    color: var(--text-light, #6b7280);
     margin-top: 0.25rem;
+    font-size: 0.88rem;
   }
-
-  .loading,
-  .error {
+  .state-box {
     text-align: center;
-    padding: 3rem;
-    color: var(--text-light);
+    padding: 2rem;
+    color: var(--text-light, #6b7280);
+    font-size: 0.9rem;
   }
-
-  .error {
-    color: var(--danger);
+  .state-box.error {
+    color: var(--danger, #dc2626);
   }
-
+  .card {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    padding: 1.25rem;
+  }
   .success-card {
     text-align: center;
-    padding: 3rem 2rem;
+    padding: 2.5rem 1.5rem;
   }
-
   .success-icon {
-    font-size: 3rem;
-    display: block;
+    color: var(--success, #16a34a);
     margin-bottom: 1rem;
   }
-
+  .success-card h3 {
+    margin: 0 0 0.5rem;
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--text, #111827);
+  }
+  .success-card p {
+    color: var(--text-light, #6b7280);
+    margin: 0;
+    font-size: 0.9rem;
+  }
   .alert-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: 1.5rem;
+    gap: 1rem;
   }
-
   .alert-card {
-    background: var(--surface);
-    border: 2px solid var(--danger);
-    border-radius: var(--radius);
-    padding: 1.5rem;
+    background: var(--surface, #fff);
+    border: 2px solid var(--danger, #dc2626);
+    border-radius: 12px;
+    padding: 1.25rem;
     position: relative;
-    box-shadow: var(--shadow);
     transition: transform 0.2s;
   }
-
   .alert-card:hover {
     transform: translateY(-2px);
-    box-shadow: var(--shadow-lg);
   }
-
   .alert-badge {
     position: absolute;
-    top: -10px;
-    right: 16px;
-    background: var(--danger);
+    top: -9px;
+    right: 1rem;
+    background: var(--danger, #dc2626);
     color: white;
-    font-size: 0.7rem;
+    font-size: 0.65rem;
     font-weight: 700;
-    padding: 0.25rem 0.75rem;
+    padding: 0.2rem 0.6rem;
     border-radius: 20px;
     letter-spacing: 0.5px;
   }
-
-  h3 {
-    margin-bottom: 1.25rem;
-    font-size: 1.25rem;
-    color: var(--text);
+  .alert-card h3 {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin: 0.5rem 0 1rem;
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text, #111827);
   }
-
   .details {
-    margin-bottom: 1.5rem;
+    margin-bottom: 1rem;
   }
-
   .detail-item {
     display: flex;
     justify-content: space-between;
+    align-items: center;
     padding: 0.5rem 0;
-    border-bottom: 1px dashed var(--border);
+    border-bottom: 1px dashed var(--border, #e5e7eb);
+    gap: 0.5rem;
   }
-
   .detail-item:last-child {
     border-bottom: none;
   }
-
   .detail-item span {
-    color: var(--text-light);
+    color: var(--text-light, #6b7280);
+    font-size: 0.85rem;
+  }
+  .detail-item strong {
+    color: var(--text, #111827);
     font-size: 0.9rem;
   }
-
   .stock-value {
-    color: var(--danger);
-    font-size: 1.25rem;
+    color: var(--danger, #dc2626) !important;
+    font-size: 1.1rem !important;
   }
-
-  .card-actions {
-    display: flex;
-    justify-content: flex-end;
-  }
-
-  .card-actions .btn {
-    width: 100%;
+  .btn {
+    display: inline-flex;
+    align-items: center;
     justify-content: center;
+    gap: 0.4rem;
+    padding: 0.55rem 1rem;
+    border-radius: 8px;
+    border: none;
+    cursor: pointer;
+    font-weight: 500;
+    font-size: 0.9rem;
+    width: 100%;
+    background: var(--primary, #0f6b3e);
+    color: white;
+    transition: background 0.15s;
+  }
+  .btn:hover {
+    background: var(--primary-dark, #0a4f2e);
   }
 
   @media (max-width: 640px) {
