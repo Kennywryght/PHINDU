@@ -1,14 +1,15 @@
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
-from sqlalchemy import func, extract, cast, Integer
 
-from app.db.session import get_db, engine
-from app.db.models.stock import StockBatch
+from fastapi import APIRouter, Depends
+from sqlalchemy import Integer, cast, extract, func
+from sqlalchemy.orm import Session
+
+from app.api.dependencies import get_current_shop_id
+from app.db.models.expense import Expense
 from app.db.models.product import Product
 from app.db.models.sale import Sale, SaleItem
-from app.db.models.expense import Expense
-from app.api.dependencies import get_current_shop_id
+from app.db.models.stock import StockBatch
+from app.db.session import engine, get_db
 
 router = APIRouter(prefix="/analytics", tags=["Analytics"])
 
@@ -24,11 +25,13 @@ def get_sell_speed(db: Session = Depends(get_db), shop_id: str = Depends(get_cur
     for batch in batches:
         if batch.date_finished:
             days = (batch.date_finished - batch.date_added).days
-            results.append({
-                "product_id": batch.product_id,
-                "quantity": batch.quantity_added,
-                "days_to_sell": days
-            })
+            results.append(
+                {
+                    "product_id": batch.product_id,
+                    "quantity": batch.quantity_added,
+                    "days_to_sell": days,
+                }
+            )
 
     return results
 
@@ -41,7 +44,7 @@ def insights(db: Session = Depends(get_db), shop_id: str = Depends(get_current_s
     return {
         "message": "Insights ready",
         "total_products": total_products,
-        "total_sales": total_sales
+        "total_sales": total_sales,
     }
 
 
@@ -56,24 +59,21 @@ def revenue_trend(db: Session = Depends(get_db), shop_id: str = Depends(get_curr
         day = six_days_ago + timedelta(days=i)
         next_day = day + timedelta(days=1)
 
-        total = db.query(func.sum(Sale.total_amount)).filter(
-            Sale.shop_id == shop_id,
-            Sale.created_at >= day,
-            Sale.created_at < next_day
-        ).scalar() or 0
+        total = (
+            db.query(func.sum(Sale.total_amount))
+            .filter(Sale.shop_id == shop_id, Sale.created_at >= day, Sale.created_at < next_day)
+            .scalar()
+            or 0
+        )
 
-        results.append({
-            "date": day.isoformat(),
-            "revenue": float(total)
-        })
+        results.append({"date": day.isoformat(), "revenue": float(total)})
 
     return results
 
 
 @router.get("/top-products")
 def top_products(
-    period: str = "day",
-    db: Session = Depends(get_db), shop_id: str = Depends(get_current_shop_id)
+    period: str = "day", db: Session = Depends(get_db), shop_id: str = Depends(get_current_shop_id)
 ):
     """Return top 10 products by quantity sold in the given period (this shop only)."""
     now = datetime.utcnow()
@@ -88,32 +88,17 @@ def top_products(
         start_date = now - timedelta(days=30)
 
     results = (
-        db.query(
-            Product.id,
-            Product.name,
-            func.sum(SaleItem.quantity).label("total_quantity")
-        )
+        db.query(Product.id, Product.name, func.sum(SaleItem.quantity).label("total_quantity"))
         .join(SaleItem, SaleItem.product_id == Product.id)
         .join(Sale, Sale.id == SaleItem.sale_id)
-        .filter(
-            Sale.shop_id == shop_id,
-            Sale.created_at >= start_date,
-            Sale.created_at <= now
-        )
+        .filter(Sale.shop_id == shop_id, Sale.created_at >= start_date, Sale.created_at <= now)
         .group_by(Product.id, Product.name)
         .order_by(func.sum(SaleItem.quantity).desc())
         .limit(10)
         .all()
     )
 
-    return [
-        {
-            "id": r.id,
-            "name": r.name,
-            "quantity": float(r.total_quantity or 0)
-        }
-        for r in results
-    ]
+    return [{"id": r.id, "name": r.name, "quantity": float(r.total_quantity or 0)} for r in results]
 
 
 @router.get("/profit-margins")
@@ -124,7 +109,7 @@ def profit_margins(db: Session = Depends(get_db), shop_id: str = Depends(get_cur
             Product.id,
             Product.name,
             func.sum(SaleItem.total_price).label("revenue"),
-            func.sum(SaleItem.cost_price).label("cost")
+            func.sum(SaleItem.cost_price).label("cost"),
         )
         .join(SaleItem, SaleItem.product_id == Product.id)
         .join(Sale, Sale.id == SaleItem.sale_id)
@@ -139,14 +124,16 @@ def profit_margins(db: Session = Depends(get_db), shop_id: str = Depends(get_cur
         cost = float(r.cost or 0)
         profit = revenue - cost
         margin_percent = (profit / revenue * 100) if revenue > 0 else 0.0
-        margins.append({
-            "id": r.id,
-            "name": r.name,
-            "revenue": revenue,
-            "cost": cost,
-            "profit": profit,
-            "margin_percent": round(margin_percent, 2)
-        })
+        margins.append(
+            {
+                "id": r.id,
+                "name": r.name,
+                "revenue": revenue,
+                "cost": cost,
+                "profit": profit,
+                "margin_percent": round(margin_percent, 2),
+            }
+        )
 
     margins.sort(key=lambda x: x["margin_percent"], reverse=True)
     return margins
@@ -163,10 +150,7 @@ def peak_hours(db: Session = Depends(get_db), shop_id: str = Depends(get_current
         hour_expr = extract("hour", Sale.created_at).label("hour")
 
     results = (
-        db.query(
-            hour_expr,
-            func.count(Sale.id).label("count")
-        )
+        db.query(hour_expr, func.count(Sale.id).label("count"))
         .filter(Sale.shop_id == shop_id)
         .group_by(hour_expr)
         .order_by(hour_expr)
@@ -185,16 +169,10 @@ def peak_hours(db: Session = Depends(get_db), shop_id: str = Depends(get_current
 def expense_breakdown(db: Session = Depends(get_db), shop_id: str = Depends(get_current_shop_id)):
     """Sum expenses grouped by category."""
     results = (
-        db.query(
-            Expense.category,
-            func.sum(Expense.amount).label('total')
-        )
+        db.query(Expense.category, func.sum(Expense.amount).label("total"))
         .filter(Expense.shop_id == shop_id)
         .group_by(Expense.category)
         .all()
     )
 
-    return [
-        {"category": r.category or "Uncategorized", "total": float(r.total)}
-        for r in results
-    ]
+    return [{"category": r.category or "Uncategorized", "total": float(r.total)} for r in results]

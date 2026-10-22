@@ -1,27 +1,27 @@
 <script>
-  import { onMount } from 'svelte';
-  import { Search, Plus, UserPlus, ShoppingCart, PackageX, CheckCircle2 } from 'lucide-svelte';
-  import Layout from '../components/Layout.svelte';
-  import CartItem from '../components/CartItem.svelte';
-  import API from '../api/api';
+  import { onMount } from "svelte";
+  import { Search, Plus, UserPlus, ShoppingCart, PackageX, CheckCircle2 } from "lucide-svelte";
+  import Layout from "../components/Layout.svelte";
+  import CartItem from "../components/CartItem.svelte";
+  import API from "../api/api";
 
   let products = [];
   let customers = [];
   let cart = [];
-  let searchTerm = '';
+  let searchTerm = "";
   let loading = false;
 
   let isCreditSale = false;
   let selectedCustomerId = null;
   let showNewCustomerModal = false;
-  let newCustomer = { name: '', phone: '', email: '', address: '' };
+  let newCustomer = { name: "", phone: "", email: "", address: "" };
 
   let checkoutSuccess = false;
 
   onMount(async () => {
     const [productsRes, customersRes] = await Promise.all([
-      API.get('/products/'),
-      API.get('/customers/'),
+      API.get("/products/"),
+      API.get("/customers/"),
     ]);
     products = productsRes.data.filter((p) => !p.archived && p.stock_qty > 0);
     customers = customersRes.data;
@@ -54,7 +54,7 @@
   async function checkout() {
     if (cart.length === 0) return;
     if (isCreditSale && !selectedCustomerId) {
-      alert('Please select a customer for credit sale');
+      alert("Please select a customer for credit sale");
       return;
     }
     loading = true;
@@ -62,10 +62,10 @@
       const payload = {
         items: cart.map((item) => ({ id: item.id, qty: item.qty })),
         customer_id: isCreditSale ? selectedCustomerId : null,
-        payment_status: isCreditSale ? 'unpaid' : 'paid',
+        payment_status: isCreditSale ? "unpaid" : "paid",
         amount_paid: isCreditSale ? 0 : total,
       };
-      await API.post('/sales/bulk', payload);
+      await API.post("/sales/bulk", payload);
 
       checkoutSuccess = true;
       setTimeout(() => (checkoutSuccess = false), 2000);
@@ -73,8 +73,8 @@
       cart = [];
       isCreditSale = false;
       selectedCustomerId = null;
-    } catch (err) {
-      alert('Checkout failed: ' + (err.response?.data?.detail || 'Unknown error'));
+    } catch {
+      alert("Checkout failed: " + (err.response?.data?.detail || "Unknown error"));
     } finally {
       loading = false;
     }
@@ -83,13 +83,13 @@
   async function createCustomer() {
     if (!newCustomer.name) return;
     try {
-      const res = await API.post('/customers/', newCustomer);
+      const res = await API.post("/customers/", newCustomer);
       customers = [...customers, res.data];
       selectedCustomerId = res.data.id;
       showNewCustomerModal = false;
-      newCustomer = { name: '', phone: '', email: '', address: '' };
-    } catch (err) {
-      alert('Failed to create customer');
+      newCustomer = { name: "", phone: "", email: "", address: "" };
+    } catch {
+      alert("Failed to create customer");
     }
   }
 
@@ -166,10 +166,14 @@
             <select bind:value={selectedCustomerId}>
               <option value={null}>-- Select customer --</option>
               {#each customers as c}
-                <option value={c.id}>{c.name}{c.phone ? ` (${c.phone})` : ''}</option>
+                <option value={c.id}>{c.name}{c.phone ? ` (${c.phone})` : ""}</option>
               {/each}
             </select>
-            <button class="btn btn-sm btn-outline" on:click={() => (showNewCustomerModal = true)} type="button">
+            <button
+              class="btn btn-sm btn-outline"
+              on:click={() => (showNewCustomerModal = true)}
+              type="button"
+            >
               <UserPlus size={14} strokeWidth={2} />
               <span>New</span>
             </button>
@@ -197,7 +201,13 @@
 
   <!-- NEW CUSTOMER MODAL -->
   {#if showNewCustomerModal}
-    <div class="modal-overlay" role="dialog" aria-modal="true" tabindex="-1" on:click|self={closeCustomerModal}>
+    <div
+      class="modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      tabindex="-1"
+      on:click|self={closeCustomerModal}
+    >
       <div class="modal">
         <h3>Add New Customer</h3>
         <div class="form-group">
@@ -217,8 +227,15 @@
           <input id="cust-address" type="text" bind:value={newCustomer.address} />
         </div>
         <div class="modal-actions">
-          <button class="btn btn-secondary" on:click={closeCustomerModal} type="button">Cancel</button>
-          <button class="btn btn-primary" on:click={createCustomer} disabled={!newCustomer.name} type="button">
+          <button class="btn btn-secondary" on:click={closeCustomerModal} type="button"
+            >Cancel</button
+          >
+          <button
+            class="btn btn-primary"
+            on:click={createCustomer}
+            disabled={!newCustomer.name}
+            type="button"
+          >
             Save
           </button>
         </div>
@@ -248,15 +265,6 @@
     position: relative;
     margin-bottom: 1rem;
     flex-shrink: 0;
-  }
-
-  .search-icon {
-    position: absolute;
-    left: 1rem;
-    top: 50%;
-    transform: translateY(-50%);
-    color: var(--text-light, #6b7280);
-    pointer-events: none;
   }
 
   .search-bar input {

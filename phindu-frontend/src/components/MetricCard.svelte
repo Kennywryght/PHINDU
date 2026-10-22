@@ -1,12 +1,12 @@
 <script>
-  export let title = '';
+  export let title = "";
   export let value = 0;
-  export let prefix = '';
-  export let suffix = '';
+  export let prefix = "";
+  export let suffix = "";
   export let highlight = false;
 
   $: formattedValue =
-    typeof value === 'number'
+    typeof value === "number"
       ? value.toLocaleString(undefined, { maximumFractionDigits: 2 })
       : value;
 </script>
@@ -15,7 +15,8 @@
   <h4>{title}</h4>
   <div class="value">
     {#if prefix}<span class="prefix">{prefix}</span>{/if}
-    <span class="number">{formattedValue}</span>{#if suffix}<span class="suffix">{suffix}</span>{/if}
+    <span class="number">{formattedValue}</span>{#if suffix}<span class="suffix">{suffix}</span
+      >{/if}
   </div>
 </div>
 

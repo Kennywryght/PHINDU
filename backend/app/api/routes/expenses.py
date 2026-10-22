@@ -1,15 +1,14 @@
-from typing import Optional
+import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field, field_serializer
 from sqlalchemy.orm import Session
-import uuid
 
-from app.db.session import SessionLocal
+from app.api.dependencies import get_current_shop_id
 from app.db.models.expense import Expense
 from app.db.models.session import Session as SessionModel
-from app.api.dependencies import get_current_shop_id
+from app.db.session import SessionLocal
 
 router = APIRouter(prefix="/expenses", tags=["Expenses"])
 
@@ -33,15 +32,15 @@ class ExpenseOut(BaseModel):
     name: str
     amount: float
     category: str
-    shop_id: Optional[str] = None
-    session_id: Optional[str] = None
-    created_at: Optional[datetime] = None
+    shop_id: str | None = None
+    session_id: str | None = None
+    created_at: datetime | None = None
 
     class Config:
         from_attributes = True
 
     @field_serializer("created_at")
-    def serialize_created_at(self, dt: Optional[datetime], _info):
+    def serialize_created_at(self, dt: datetime | None, _info):
         return dt.isoformat() if dt else None
 
 

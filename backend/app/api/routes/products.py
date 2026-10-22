@@ -5,14 +5,14 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.db.models.product import Product
+from app.api.dependencies import get_current_shop_id
+from app.api.deps import require_role  # 🔧 Fix 2.5
 from app.db.models.price_history import PriceHistory
+from app.db.models.product import Product
 from app.db.models.sale import SaleItem
 from app.db.models.stock import StockBatch
 from app.db.session import SessionLocal
 from app.schemas.product import ProductCreate, ProductOut, ProductUpdate
-from app.api.dependencies import get_current_shop_id
-from app.api.deps import require_role              # 🔧 Fix 2.5
 
 router = APIRouter(prefix="/products", tags=["Products"])
 
@@ -96,20 +96,12 @@ def delete_product(
 
     Requires owner role — destructive operation.
     """
-    product = (
-        db.query(Product)
-        .filter(Product.id == product_id, Product.shop_id == shop_id)
-        .first()
-    )
+    product = db.query(Product).filter(Product.id == product_id, Product.shop_id == shop_id).first()
 
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    sale_exists = (
-        db.query(SaleItem)
-        .filter(SaleItem.product_id == product_id)
-        .first()
-    )
+    sale_exists = db.query(SaleItem).filter(SaleItem.product_id == product_id).first()
 
     if sale_exists:
         product.is_deleted = True
@@ -129,11 +121,7 @@ def update_product(
     shop_id: str = Depends(get_current_shop_id),
 ):
     """Update product fields and handle stock changes."""
-    product = (
-        db.query(Product)
-        .filter(Product.id == product_id, Product.shop_id == shop_id)
-        .first()
-    )
+    product = db.query(Product).filter(Product.id == product_id, Product.shop_id == shop_id).first()
 
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -180,11 +168,7 @@ def restore_product(
     shop_id: str = Depends(get_current_shop_id),
 ):
     """Restore a soft-deleted product."""
-    product = (
-        db.query(Product)
-        .filter(Product.id == product_id, Product.shop_id == shop_id)
-        .first()
-    )
+    product = db.query(Product).filter(Product.id == product_id, Product.shop_id == shop_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     product.is_deleted = False
@@ -199,11 +183,7 @@ def archive_product(
     shop_id: str = Depends(get_current_shop_id),
 ):
     """Archive a product so it is hidden from normal listings."""
-    product = (
-        db.query(Product)
-        .filter(Product.id == product_id, Product.shop_id == shop_id)
-        .first()
-    )
+    product = db.query(Product).filter(Product.id == product_id, Product.shop_id == shop_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     product.archived = True
@@ -217,11 +197,7 @@ def unarchive_product(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    product = (
-        db.query(Product)
-        .filter(Product.id == product_id, Product.shop_id == shop_id)
-        .first()
-    )
+    product = db.query(Product).filter(Product.id == product_id, Product.shop_id == shop_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     product.archived = False

@@ -1,5 +1,5 @@
 <script>
-  import { createEventDispatcher, onMount } from 'svelte';
+  import { createEventDispatcher, onMount } from "svelte";
   import {
     LayoutDashboard,
     Package,
@@ -10,59 +10,64 @@
     AlertTriangle,
     Clock,
     CreditCard,
+    LogOut,
+    User as UserIcon,
     X,
-  } from 'lucide-svelte';
+  } from "lucide-svelte";
 
   export let sidebarOpen = false;
   const dispatch = createEventDispatcher();
 
   const navItems = [
-    { href: '/', label: 'Dashboard', icon: LayoutDashboard },
-    { href: '/products', label: 'Products', icon: Package },
-    { href: '/pos', label: 'Point of Sale', icon: ShoppingCart },
-    { href: '/sales', label: 'Sales', icon: DollarSign },
-    { href: '/insights', label: 'Insights', icon: TrendingUp },
-    { href: '/expenses', label: 'Expenses', icon: Receipt },
-    { href: '/alerts', label: 'Alerts', icon: AlertTriangle },
-    { href: '/sessions', label: 'Sessions', icon: Clock },
-    { href: '/credit', label: 'Credit / Loans', icon: CreditCard },
+    { href: "/", label: "Dashboard", icon: LayoutDashboard },
+    { href: "/products", label: "Products", icon: Package },
+    { href: "/pos", label: "Point of Sale", icon: ShoppingCart },
+    { href: "/sales", label: "Sales", icon: DollarSign },
+    { href: "/insights", label: "Insights", icon: TrendingUp },
+    { href: "/expenses", label: "Expenses", icon: Receipt },
+    { href: "/alerts", label: "Alerts", icon: AlertTriangle },
+    { href: "/sessions", label: "Sessions", icon: Clock },
+    { href: "/credit", label: "Credit / Loans", icon: CreditCard },
   ];
 
-  let currentPath = typeof window !== 'undefined' ? window.location.pathname : '/';
+  let currentPath = typeof window !== "undefined" ? window.location.pathname : "/";
 
   function updateCurrentPath() {
     currentPath = window.location.pathname;
   }
 
   function navigate(href) {
-    if (typeof window !== 'undefined' && window.navigate) {
+    if (typeof window !== "undefined" && window.navigate) {
       window.navigate(href);
     } else {
       window.location.href = href;
     }
     currentPath = href;
     if (window.innerWidth <= 768) {
-      dispatch('close');
+      dispatch("close");
     }
   }
 
   function closeSidebar() {
-    dispatch('close');
+    dispatch("close");
+  }
+
+  function handleLogout() {
+    import("../stores/auth.js").then((module) => module.logout());
   }
 
   function handleKeydown(e) {
-    if (e.key === 'Escape' && sidebarOpen) {
+    if (e.key === "Escape" && sidebarOpen) {
       closeSidebar();
     }
   }
 
-  // ✅ Single onMount (was duplicated before)
   onMount(() => {
-    window.addEventListener('popstate', updateCurrentPath);
-    window.addEventListener('keydown', handleKeydown);
+    window.addEventListener("popstate", updateCurrentPath);
+    window.addEventListener("keydown", handleKeydown);
     return () => {
-      window.removeEventListener('popstate', updateCurrentPath);
-      window.removeEventListener('keydown', handleKeydown);
+      window.removeEventListener("popstate", updateCurrentPath);
+      window.removeEventListener("keydown", handleKeydown);
     };
   });
 </script>
@@ -74,19 +79,14 @@
     tabindex="0"
     aria-label="Close menu"
     on:click={closeSidebar}
-    on:keydown={(e) => e.key === 'Enter' && closeSidebar()}
+    on:keydown={(e) => e.key === "Enter" && closeSidebar()}
   ></div>
 {/if}
 
 <aside class="sidebar" class:open={sidebarOpen}>
   <div class="sidebar-header">
     <h2>PHINDU</h2>
-    <button
-      class="close-btn"
-      on:click={closeSidebar}
-      aria-label="Close menu"
-      type="button"
-    >
+    <button class="close-btn" on:click={closeSidebar} aria-label="Close menu" type="button">
       <X size={22} />
     </button>
   </div>
@@ -107,6 +107,21 @@
       </button>
     {/each}
   </nav>
+
+  <div class="sidebar-footer">
+    <div class="user-info">
+      <span class="user-avatar">
+        <UserIcon size={18} strokeWidth={1.75} />
+      </span>
+      <span class="user-label">Account</span>
+    </div>
+    <button class="nav-item logout-btn" on:click={handleLogout} type="button">
+      <span class="icon">
+        <LogOut size={20} strokeWidth={1.75} />
+      </span>
+      <span class="label">Logout</span>
+    </button>
+  </div>
 </aside>
 
 <style>
@@ -169,6 +184,7 @@
     display: flex;
     flex-direction: column;
     gap: 0.25rem;
+    flex: 1;
   }
 
   .nav-item {
@@ -185,7 +201,9 @@
     width: 100%;
     font-size: 0.92rem;
     font-weight: 500;
-    transition: background 0.15s, color 0.15s;
+    transition:
+      background 0.15s,
+      color 0.15s;
     white-space: nowrap;
   }
 
@@ -216,7 +234,43 @@
     text-overflow: ellipsis;
   }
 
-  /* ============ MOBILE ============ */
+  .sidebar-footer {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    padding-top: 0.75rem;
+    margin-top: 0.75rem;
+    border-top: 1px solid var(--border, #e5e7eb);
+    flex-shrink: 0;
+  }
+
+  .user-info {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.6rem 0.9rem;
+    font-size: 0.88rem;
+    color: var(--text-light, #6b7280);
+    font-weight: 500;
+  }
+
+  .user-avatar {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--primary-light, #d1fae5);
+    color: var(--primary-dark, #065f46);
+    flex-shrink: 0;
+  }
+
+  .logout-btn:hover {
+    background: #fef2f2;
+    color: var(--danger, #dc2626);
+  }
+
   @media (max-width: 768px) {
     .backdrop {
       display: block;
@@ -230,7 +284,8 @@
 
     .sidebar.open {
       transform: translateX(0);
-      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.15),
+      box-shadow:
+        0 20px 25px -5px rgba(0, 0, 0, 0.15),
         0 10px 10px -5px rgba(0, 0, 0, 0.1);
     }
 

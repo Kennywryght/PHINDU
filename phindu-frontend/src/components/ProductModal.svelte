@@ -1,19 +1,19 @@
 <script>
-  import { createEventDispatcher } from 'svelte';
-  import { X } from 'lucide-svelte';
+  import { createEventDispatcher } from "svelte";
+  import { X } from "lucide-svelte";
 
   export let product = null;
   const dispatch = createEventDispatcher();
 
   let form = {
-    name: '',
-    category: '',
-    type: 'variant',
-    unit: '',
+    name: "",
+    category: "",
+    type: "variant",
+    unit: "",
     selling_price: 0,
     purchase_price: 0,
     stock_qty: 0,
-    parent_id: '',
+    parent_id: "",
   };
 
   if (product) {
@@ -22,33 +22,27 @@
 
   function handleSubmit() {
     const payload = { ...form };
-    if (!payload.parent_id || payload.parent_id.trim() === '') {
+    if (!payload.parent_id || payload.parent_id.trim() === "") {
       delete payload.parent_id;
     }
-    dispatch('save', payload);
+    dispatch("save", payload);
   }
 
   function close() {
-    dispatch('close');
+    dispatch("close");
   }
 
   function handleKeydown(e) {
-    if (e.key === 'Escape') close();
+    if (e.key === "Escape") close();
   }
 </script>
 
 <svelte:window on:keydown={handleKeydown} />
 
-<div
-  class="modal-overlay"
-  role="dialog"
-  aria-modal="true"
-  tabindex="-1"
-  on:click|self={close}
->
+<div class="modal-overlay" role="dialog" aria-modal="true" tabindex="-1">
   <div class="modal">
     <div class="modal-header">
-      <h2>{product ? 'Edit Product' : 'Add Product'}</h2>
+      <h2>{product ? "Edit Product" : "Add Product"}</h2>
       <button class="close-btn" on:click={close} type="button" aria-label="Close">
         <X size={20} strokeWidth={2} />
       </button>
@@ -89,7 +83,13 @@
 
         <div class="form-group">
           <label for="p-purchase">Purchase Price</label>
-          <input id="p-purchase" type="number" step="0.01" min="0" bind:value={form.purchase_price} />
+          <input
+            id="p-purchase"
+            type="number"
+            step="0.01"
+            min="0"
+            bind:value={form.purchase_price}
+          />
         </div>
       </div>
 
@@ -100,7 +100,11 @@
 
       <div class="form-group">
         <label for="p-parent">Parent ID (optional)</label>
-        <input id="p-parent" bind:value={form.parent_id} placeholder="Leave blank for standalone product" />
+        <input
+          id="p-parent"
+          bind:value={form.parent_id}
+          placeholder="Leave blank for standalone product"
+        />
       </div>
 
       <div class="modal-actions">
@@ -242,7 +246,6 @@
     background: var(--background, #f9fafb);
   }
 
-  /* ============ MOBILE ============ */
   @media (max-width: 480px) {
     .modal-overlay {
       padding: 0.75rem;

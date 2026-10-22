@@ -1,57 +1,48 @@
 <script>
-  import { register } from '../stores/auth.js';
-  import {
-    Store,
-    User,
-    Mail,
-    Lock,
-    Check,
-    Eye,
-    EyeOff,
-    AlertCircle,
-  } from 'lucide-svelte';
+  import { register } from "../stores/auth.js";
+  import { Store, User, Mail, Lock, Check, Eye, EyeOff, AlertCircle } from "lucide-svelte";
 
-  let shopName = '';
-  let fullName = '';
-  let email = '';
-  let password = '';
-  let confirmPassword = '';
+  let shopName = "";
+  let fullName = "";
+  let email = "";
+  let password = "";
+  let confirmPassword = "";
   let showPassword = false;
   let showConfirmPassword = false;
   let loading = false;
-  let error = '';
+  let error = "";
 
   async function handleSubmit() {
     if (!shopName || !fullName || !email || !password) {
-      error = 'All fields are required';
+      error = "All fields are required";
       return;
     }
     if (password !== confirmPassword) {
-      error = 'Passwords do not match';
+      error = "Passwords do not match";
       return;
     }
     if (password.length < 4) {
-      error = 'Password must be at least 4 characters';
+      error = "Password must be at least 4 characters";
       return;
     }
     loading = true;
-    error = '';
+    error = "";
     try {
       await register(shopName, fullName, email, password);
       if (window.navigate) {
-        window.navigate('/');
+        window.navigate("/");
       } else {
-        window.location.href = '/';
+        window.location.href = "/";
       }
-    } catch (err) {
-      error = err.response?.data?.detail || 'Registration failed. Please try again.';
+    } catch {
+      error = err.response?.data?.detail || "Registration failed. Please try again.";
     } finally {
       loading = false;
     }
   }
 
   function goToLogin() {
-    window.location.href = '/login';
+    window.location.href = "/login";
   }
 </script>
 
@@ -116,7 +107,7 @@
             <Lock size={18} strokeWidth={1.75} class="icon" />
             <input
               id="password"
-              type={showPassword ? 'text' : 'password'}
+              type={showPassword ? "text" : "password"}
               bind:value={password}
               placeholder="••••••••"
               required
@@ -127,7 +118,7 @@
               class="toggle-password"
               on:click={() => (showPassword = !showPassword)}
               tabindex="-1"
-              aria-label={showPassword ? 'Hide password' : 'Show password'}
+              aria-label={showPassword ? "Hide password" : "Show password"}
             >
               {#if showPassword}
                 <EyeOff size={18} strokeWidth={1.75} />
@@ -144,7 +135,7 @@
             <Check size={18} strokeWidth={2} class="icon" />
             <input
               id="confirmPassword"
-              type={showConfirmPassword ? 'text' : 'password'}
+              type={showConfirmPassword ? "text" : "password"}
               bind:value={confirmPassword}
               placeholder="••••••••"
               required
@@ -155,7 +146,7 @@
               class="toggle-password"
               on:click={() => (showConfirmPassword = !showConfirmPassword)}
               tabindex="-1"
-              aria-label={showConfirmPassword ? 'Hide password' : 'Show password'}
+              aria-label={showConfirmPassword ? "Hide password" : "Show password"}
             >
               {#if showConfirmPassword}
                 <EyeOff size={18} strokeWidth={1.75} />
@@ -186,14 +177,10 @@
         <span>Already have an account?</span>
       </div>
 
-      <button type="button" class="btn-secondary" on:click={goToLogin}>
-        Sign In
-      </button>
+      <button type="button" class="btn-secondary" on:click={goToLogin}> Sign In </button>
     </form>
 
-    <p class="footer-text">
-      By creating an account, you agree to our Terms of Service
-    </p>
+    <p class="footer-text">By creating an account, you agree to our Terms of Service</p>
   </div>
 </div>
 
@@ -211,7 +198,7 @@
 
   .auth-container::before,
   .auth-container::after {
-    content: '';
+    content: "";
     position: absolute;
     width: 300px;
     height: 300px;
@@ -304,8 +291,7 @@
     align-items: center;
   }
 
-  .input-icon :global(.icon),
-  .icon {
+  .input-icon :global(.icon) {
     position: absolute;
     left: 1rem;
     color: #94a3b8;
@@ -417,7 +403,7 @@
 
   .divider::before,
   .divider::after {
-    content: '';
+    content: "";
     flex: 1;
     border-bottom: 1px solid #e2e8f0;
   }

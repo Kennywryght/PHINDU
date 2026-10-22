@@ -1,7 +1,9 @@
 import uuid
-from sqlalchemy import Column, String, DateTime
-from sqlalchemy.sql import func
+
+from sqlalchemy import Column, DateTime, String
 from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
+
 from app.db.session import Base
 
 
@@ -21,3 +23,4 @@ class Shop(Base):
     customers = relationship("Customer", back_populates="shop")
     sessions = relationship("Session", back_populates="shop")
     stock_batches = relationship("StockBatch", back_populates="shop")
+    payments = relationship("Payment", back_populates="shop")  # 🔧 NEW

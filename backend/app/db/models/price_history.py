@@ -1,7 +1,10 @@
-from sqlalchemy import Column, String, Float, DateTime, ForeignKey
-from app.db.session import Base
 import uuid
 from datetime import datetime
+
+from sqlalchemy import Column, DateTime, Float, ForeignKey, String
+
+from app.db.session import Base
+
 
 class PriceHistory(Base):
     __tablename__ = "price_history"

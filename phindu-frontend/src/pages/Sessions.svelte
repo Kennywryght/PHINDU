@@ -1,8 +1,8 @@
 <script>
-  import { onMount } from 'svelte';
-  import { Calendar, Plus, X, CheckCircle } from 'lucide-svelte';
-  import Layout from '../components/Layout.svelte';
-  import API from '../api/api';
+  import { onMount } from "svelte";
+  import { Calendar, Plus, CheckCircle } from "lucide-svelte";
+  import Layout from "../components/Layout.svelte";
+  import API from "../api/api";
 
   let sessions = [];
   let currentSession = null;
@@ -11,7 +11,7 @@
   let showCloseModal = false;
   let openingBalance = 0;
   let closingBalance = 0;
-  let closeNotes = '';
+  let closeNotes = "";
 
   onMount(async () => {
     await Promise.all([fetchSessions(), fetchCurrentSession()]);
@@ -20,16 +20,16 @@
 
   async function fetchSessions() {
     try {
-      const res = await API.get('/sessions/');
+      const res = await API.get("/sessions/");
       sessions = res.data;
     } catch (err) {
-      console.error('Failed to fetch sessions', err);
+      console.error("Failed to fetch sessions", err);
     }
   }
 
   async function fetchCurrentSession() {
     try {
-      const res = await API.get('/sessions/current');
+      const res = await API.get("/sessions/current");
       currentSession = res.data.id ? res.data : null;
     } catch {
       currentSession = null;
@@ -38,7 +38,7 @@
 
   async function openSession() {
     try {
-      await API.post('/sessions/open', null, {
+      await API.post("/sessions/open", null, {
         params: { opening_balance: openingBalance },
       });
       await fetchCurrentSession();
@@ -46,32 +46,32 @@
       showOpenModal = false;
       openingBalance = 0;
     } catch (err) {
-      alert('Failed to open session: ' + (err.response?.data?.detail || 'Unknown error'));
+      alert("Failed to open session: " + (err.response?.data?.detail || "Unknown error"));
     }
   }
 
   async function closeSession() {
     try {
-      await API.post('/sessions/close', null, {
+      await API.post("/sessions/close", null, {
         params: { closing_balance: closingBalance, notes: closeNotes },
       });
       await fetchCurrentSession();
       await fetchSessions();
       showCloseModal = false;
       closingBalance = 0;
-      closeNotes = '';
+      closeNotes = "";
     } catch (err) {
-      alert('Failed to close session: ' + (err.response?.data?.detail || 'Unknown error'));
+      alert("Failed to close session: " + (err.response?.data?.detail || "Unknown error"));
     }
   }
 
   function formatDateTime(isoString) {
-    if (!isoString) return '—';
+    if (!isoString) return "—";
     return new Date(isoString).toLocaleString();
   }
 
   function formatDate(isoString) {
-    if (!isoString) return '—';
+    if (!isoString) return "—";
     return new Date(isoString).toLocaleDateString();
   }
 </script>
@@ -102,12 +102,20 @@
             <strong>MWK {currentSession.total_expenses?.toLocaleString()}</strong>
           </div>
         </div>
-        <button class="btn btn-primary btn-block" on:click={() => (showCloseModal = true)} type="button">
+        <button
+          class="btn btn-primary btn-block"
+          on:click={() => (showCloseModal = true)}
+          type="button"
+        >
           Close Day
         </button>
       {:else}
         <p class="no-session">No active session.</p>
-        <button class="btn btn-primary btn-block" on:click={() => (showOpenModal = true)} type="button">
+        <button
+          class="btn btn-primary btn-block"
+          on:click={() => (showOpenModal = true)}
+          type="button"
+        >
           <Plus size={16} strokeWidth={2} /> Open New Session
         </button>
       {/if}
@@ -138,7 +146,11 @@
                     <td>{formatDate(s.opened_at)}</td>
                     <td>MWK {s.total_sales?.toLocaleString()}</td>
                     <td>MWK {s.total_expenses?.toLocaleString()}</td>
-                    <td><strong>MWK {((s.total_sales || 0) - (s.total_expenses || 0)).toLocaleString()}</strong></td>
+                    <td>
+                      <strong>
+                        MWK {(s.total_sales || 0 - s.total_expenses || 0).toLocaleString()}
+                      </strong>
+                    </td>
                     <td>{formatDateTime(s.closed_at)}</td>
                   </tr>
                 {/if}
@@ -151,7 +163,14 @@
   </div>
 
   {#if showOpenModal}
-    <div class="modal-overlay" role="dialog" aria-modal="true" tabindex="-1" on:click|self={() => (showOpenModal = false)}>
+    <div
+      class="modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      tabindex="-1"
+      on:click|self={() => (showOpenModal = false)}
+      on:keydown={(e) => e.key === "Escape" && (showOpenModal = false)}
+    >
       <div class="modal">
         <h3>
           <Calendar size={18} strokeWidth={2} /> Open New Session
@@ -161,7 +180,9 @@
           <input id="opening" type="number" min="0" step="0.01" bind:value={openingBalance} />
         </div>
         <div class="modal-actions">
-          <button class="btn btn-secondary" on:click={() => (showOpenModal = false)} type="button">Cancel</button>
+          <button class="btn btn-secondary" on:click={() => (showOpenModal = false)} type="button">
+            Cancel
+          </button>
           <button class="btn btn-primary" on:click={openSession} type="button">Open</button>
         </div>
       </div>
@@ -169,7 +190,14 @@
   {/if}
 
   {#if showCloseModal}
-    <div class="modal-overlay" role="dialog" aria-modal="true" tabindex="-1" on:click|self={() => (showCloseModal = false)}>
+    <div
+      class="modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      tabindex="-1"
+      on:click|self={() => (showCloseModal = false)}
+      on:keydown={(e) => e.key === "Escape" && (showCloseModal = false)}
+    >
       <div class="modal">
         <h3>
           <CheckCircle size={18} strokeWidth={2} /> Close Session
@@ -183,7 +211,9 @@
           <textarea id="notes" bind:value={closeNotes} rows="3"></textarea>
         </div>
         <div class="modal-actions">
-          <button class="btn btn-secondary" on:click={() => (showCloseModal = false)} type="button">Cancel</button>
+          <button class="btn btn-secondary" on:click={() => (showCloseModal = false)} type="button">
+            Cancel
+          </button>
           <button class="btn btn-primary" on:click={closeSession} type="button">Close Day</button>
         </div>
       </div>

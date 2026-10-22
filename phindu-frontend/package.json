@@ -1,24 +1,42 @@
 {
-  "name": "phindu-frontend",
+  "name": "phindu-forSmallBusiness",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "lint": "eslint . --ext .js,.svelte",
+    "lint:fix": "eslint . --ext .js,.svelte --fix",
+    "format": "prettier --write \"src/**/*.{js,svelte,css,json}\"",
+    "format:check": "prettier --check \"src/**/*.{js,svelte,css,json}\"",
+    "check": "svelte-check --tsconfig ./jsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.0.0",
     "@tailwindcss/cli": "^4.2.2",
     "@tailwindcss/postcss": "^4.2.2",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/svelte": "^5.4.2",
     "autoprefixer": "^10.4.27",
+    "eslint": "^9.15.0",
+    "eslint-plugin-svelte": "^2.46.0",
+    "globals": "^15.12.0",
+    "jsdom": "^25.0.1",
     "postcss": "^8.5.9",
     "postcss-nesting": "^14.0.0",
+    "prettier": "^3.4.1",
+    "prettier-plugin-svelte": "^3.3.2",
     "svelte": "^5.55.1",
+    "svelte-check": "^4.0.9",
     "tailwindcss": "^4.2.2",
+    "typescript": "^6.0.3",
     "vite": "^8.0.4",
-    "vite-plugin-pwa": "^1.2.0"
+    "vite-plugin-pwa": "^1.2.0",
+    "vitest": "^4.1.12"
   },
   "dependencies": {
     "axios": "^1.15.0",

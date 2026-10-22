@@ -2,22 +2,23 @@
 Authentication routes: register, login, me.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy.orm import Session
-from jose import JWTError
 import uuid
 
-from app.db.session import get_db
-from app.db.models.user import User
-from app.db.models.shop import Shop
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from jose import JWTError
+from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy.orm import Session
+
 from app.core.security import (
-    verify_password,
     create_access_token,
-    get_password_hash,
     decode_token,
+    get_password_hash,
+    verify_password,
 )
+from app.db.models.shop import Shop
+from app.db.models.user import User
+from app.db.session import get_db
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -85,9 +86,7 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
     # Password byte-length check (PBKDF2 has no 72-byte limit, but keep
     # it consistent with bcrypt's typical limit for future compat)
     if len(data.password.encode("utf-8")) > 72:
-        raise HTTPException(
-            status_code=400, detail="Password too long (max 72 bytes)"
-        )
+        raise HTTPException(status_code=400, detail="Password too long (max 72 bytes)")
 
     existing = db.query(User).filter(User.email == data.email).first()
     if existing:

@@ -1,0 +1,32 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.db
+*.db.backup
+phindu.db
+test_phindu.db
+.env
+.pytest_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+dist/
+build/
+.svelte-kit/
+coverage/
+*.log
+
+# Test caches
+node_modules/.vitest/
+node_modules/.vite-cache/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

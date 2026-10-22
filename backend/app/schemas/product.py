@@ -1,26 +1,27 @@
 """Product Pydantic schemas."""
 
-from typing import Optional
 from pydantic import BaseModel, Field
 
 
 class ProductCreate(BaseModel):
     """Schema for creating a new product."""
+
     name: str
-    category: Optional[str] = None
-    type: str = Field(..., description="\"variant\" or \"bulk\"")
-    unit: str = Field(..., description="\"kg\", \"g\", \"piece\"")
+    category: str | None = None
+    type: str = Field(..., description='"variant" or "bulk"')
+    unit: str = Field(..., description='"kg", "g", "piece"')
     selling_price: float = Field(..., gt=0, description="Selling price must be greater than 0")
     purchase_price: float = Field(..., gt=0, description="Purchase price must be greater than 0")
     stock_qty: float = Field(..., ge=0, description="Stock quantity must be a non-negative number")
-    parent_id: Optional[str] = None
+    parent_id: str | None = None
 
 
 class ProductOut(BaseModel):
     """Schema for product output."""
+
     id: str
     name: str
-    category: Optional[str]
+    category: str | None
     type: str
     unit: str
     selling_price: float
@@ -34,10 +35,11 @@ class ProductOut(BaseModel):
 
 class ProductUpdate(BaseModel):
     """Schema for updating product fields."""
-    name: Optional[str] = None
-    category: Optional[str] = None
-    type: Optional[str] = None
-    unit: Optional[str] = None
-    selling_price: Optional[float] = None
-    purchase_price: Optional[float] = None
-    stock_qty: Optional[float] = None
+
+    name: str | None = None
+    category: str | None = None
+    type: str | None = None
+    unit: str | None = None
+    selling_price: float | None = None
+    purchase_price: float | None = None
+    stock_qty: float | None = None

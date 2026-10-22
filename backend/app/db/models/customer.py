@@ -1,8 +1,11 @@
 import uuid
-from sqlalchemy import Column, String, Float, DateTime, ForeignKey
-from sqlalchemy.sql import func
-from app.db.session import Base
+
+from sqlalchemy import Column, DateTime, Float, ForeignKey, String
 from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
+
+from app.db.session import Base
+
 
 class Customer(Base):
     __tablename__ = "customers"
@@ -13,7 +16,10 @@ class Customer(Base):
     phone = Column(String, nullable=True)
     email = Column(String, nullable=True)
     address = Column(String, nullable=True)
-    total_credit = Column(Float, default=0.0)   # total amount owed
+    total_credit = Column(Float, default=0.0)  # total amount owed
     created_at = Column(DateTime, server_default=func.now())
+
+    # Relationships
     shop = relationship("Shop", back_populates="customers")
     sales = relationship("Sale", back_populates="customer")
+    payments = relationship("Payment", back_populates="customer")  # 🔧 NEW

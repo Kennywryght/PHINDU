@@ -1,10 +1,10 @@
 <script>
-  import { onMount } from 'svelte';
-  import { Download, X } from 'lucide-svelte';
-  import Sidebar from './Sidebar.svelte';
-  import Topbar from './Topbar.svelte';
+  import { onMount } from "svelte";
+  import { Download, X } from "lucide-svelte";
+  import Sidebar from "./Sidebar.svelte";
+  import Topbar from "./Topbar.svelte";
 
-  export let title = 'Dashboard';
+  export let title = "Dashboard";
   let sidebarOpen = false;
 
   // PWA install prompt
@@ -17,9 +17,9 @@
       deferredPrompt = e;
       showInstall = true;
     };
-    window.addEventListener('beforeinstallprompt', handleBeforeInstall);
+    window.addEventListener("beforeinstallprompt", handleBeforeInstall);
     return () => {
-      window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
+      window.removeEventListener("beforeinstallprompt", handleBeforeInstall);
     };
   });
 
@@ -27,7 +27,7 @@
     if (!deferredPrompt) return;
     deferredPrompt.prompt();
     const { outcome } = await deferredPrompt.userChoice;
-    if (outcome === 'accepted') {
+    if (outcome === "accepted") {
       deferredPrompt = null;
       showInstall = false;
     }
@@ -64,13 +64,7 @@
       <Download size={18} strokeWidth={1.75} />
       <span>Install PHINDU for offline use</span>
     </span>
-    <button
-      class="install-btn"
-      on:click={installApp}
-      type="button"
-    >
-      Install
-    </button>
+    <button class="install-btn" on:click={installApp} type="button"> Install </button>
     <button
       class="close-banner"
       on:click={dismissInstall}

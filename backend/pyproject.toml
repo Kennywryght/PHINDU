@@ -1,0 +1,58 @@
+# ─── Pytest ───────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short --strict-markers"
+asyncio_mode = "auto"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::pytest.PytestAssertRewriteWarning",
+]
+
+# ─── Ruff — linter + formatter ────────────────────────────────────
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+indent-width = 4
+src = ["app", "tests"]
+exclude = [
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "alembic/versions",
+    "*.pyc",
+]
+
+[tool.ruff.lint]
+# E = pycodestyle errors, F = pyflakes, I = isort, B = bugbear,
+# UP = pyupgrade, C4 = comprehensions, SIM = simplify
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes (unused imports, undefined names)
+    "I",   # isort (import sorting)
+    "B",   # flake8-bugbear (common bugs)
+    "UP",  # pyupgrade (modernize syntax)
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "E501",  # line too long (we set line-length = 100, ruff handles it)
+    "B008",  # FastAPI Depends() in defaults is normal
+    "B904",  # raise from in except blocks (optional)
+    "SIM108", # ternary suggestion (often worse readability)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*.py" = ["B011", "E402"]  # allow imports outside top in test files
+"__init__.py" = ["F401"]          # re-exports are fine
+"alembic/env.py" = ["E402"]       # module reloads require late imports
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+skip-magic-trailing-comma = false
+docstring-code-format = true

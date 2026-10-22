@@ -1,18 +1,21 @@
 """Product database model."""
 
 import uuid
-from sqlalchemy import Column, String, Float, ForeignKey, Boolean
-from app.db.session import Base
+
+from sqlalchemy import Boolean, Column, Float, ForeignKey, String
 from sqlalchemy.orm import relationship
+
+from app.db.session import Base
 
 
 class Product(Base):
     """Product model representing items for sale."""
+
     __tablename__ = "products"
-    
+
     shop_id = Column(String, ForeignKey("shops.id"), nullable=False)
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    
+
     name = Column(String, nullable=False)
     category = Column(String)
 

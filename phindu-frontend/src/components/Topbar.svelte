@@ -1,38 +1,23 @@
 <script>
-  import { createEventDispatcher, onMount } from 'svelte';
-  import { locale } from 'svelte-i18n';
-  import {
-    Menu,
-    Moon,
-    Sun,
-    Globe,
-    LogOut,
-    User as UserIcon,
-    Circle,
-  } from 'lucide-svelte';
-  import API from '../api/api';
+  import { createEventDispatcher, onMount } from "svelte";
+  import { locale } from "svelte-i18n";
+  import { Menu, Moon, Sun, Globe, Circle } from "lucide-svelte";
+  import API from "../api/api";
 
-  export let title = '';
+  export let title = "";
   const dispatch = createEventDispatcher();
 
-  // Session state
   let session = null;
   let showSessionModal = false;
   let openingBalance = 0;
 
-  // Theme state
-  let theme = typeof window !== 'undefined'
-    ? localStorage.getItem('theme') || 'light'
-    : 'light';
+  let theme = typeof window !== "undefined" ? localStorage.getItem("theme") || "light" : "light";
 
-  if (typeof document !== 'undefined') {
-    document.documentElement.setAttribute('data-theme', theme);
+  if (typeof document !== "undefined") {
+    document.documentElement.setAttribute("data-theme", theme);
   }
 
-  // Language state
-  let currentLocale = typeof window !== 'undefined'
-    ? localStorage.getItem('locale') || 'en'
-    : 'en';
+  let currentLocale = typeof window !== "undefined" ? localStorage.getItem("locale") || "en" : "en";
   locale.set(currentLocale);
 
   onMount(() => {
@@ -43,7 +28,7 @@
 
   async function fetchCurrentSession() {
     try {
-      const res = await API.get('/sessions/current');
+      const res = await API.get("/sessions/current");
       session = res.data.id ? res.data : null;
     } catch {
       session = null;
@@ -52,38 +37,31 @@
 
   async function openSession() {
     if (!openingBalance || openingBalance < 0) {
-      alert('Please enter a valid opening balance');
+      alert("Please enter a valid opening balance");
       return;
     }
     try {
-      await API.post('/sessions/open', null, {
+      await API.post("/sessions/open", null, {
         params: { opening_balance: openingBalance },
       });
       await fetchCurrentSession();
       showSessionModal = false;
       openingBalance = 0;
     } catch (err) {
-      alert(
-        'Failed to open session: ' +
-          (err.response?.data?.detail || 'Unknown error')
-      );
+      alert("Failed to open session: " + (err.response?.data?.detail || "Unknown error"));
     }
   }
 
   function toggleTheme() {
-    theme = theme === 'light' ? 'dark' : 'light';
-    document.documentElement.setAttribute('data-theme', theme);
-    localStorage.setItem('theme', theme);
+    theme = theme === "light" ? "dark" : "light";
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("theme", theme);
   }
 
   function toggleLocale() {
-    currentLocale = currentLocale === 'en' ? 'ny' : 'en';
+    currentLocale = currentLocale === "en" ? "ny" : "en";
     locale.set(currentLocale);
-    localStorage.setItem('locale', currentLocale);
-  }
-
-  function handleLogout() {
-    import('../stores/auth.js').then((module) => module.logout());
+    localStorage.setItem("locale", currentLocale);
   }
 </script>
 
@@ -91,7 +69,7 @@
   <div class="left-group">
     <button
       class="menu-btn"
-      on:click={() => dispatch('toggle')}
+      on:click={() => dispatch("toggle")}
       aria-label="Open menu"
       type="button"
     >
@@ -136,7 +114,7 @@
       aria-label="Toggle theme"
       type="button"
     >
-      {#if theme === 'light'}
+      {#if theme === "light"}
         <Moon size={20} strokeWidth={1.75} />
       {:else}
         <Sun size={20} strokeWidth={1.75} />
@@ -153,20 +131,6 @@
       <Globe size={20} strokeWidth={1.75} />
       <span class="lang-tag">{currentLocale.toUpperCase()}</span>
     </button>
-
-    <button
-      on:click={handleLogout}
-      title="Logout"
-      class="icon-btn"
-      aria-label="Logout"
-      type="button"
-    >
-      <LogOut size={20} strokeWidth={1.75} />
-    </button>
-
-    <span class="user-avatar" aria-label="User">
-      <UserIcon size={20} strokeWidth={1.75} />
-    </span>
   </div>
 </header>
 
@@ -175,32 +139,21 @@
     class="modal-overlay"
     role="dialog"
     aria-modal="true"
+    tabindex="-1"
     on:click|self={() => (showSessionModal = false)}
-    on:keydown={(e) => e.key === 'Escape' && (showSessionModal = false)}
+    on:keydown={(e) => e.key === "Escape" && (showSessionModal = false)}
   >
     <div class="modal">
       <h3>Open New Session</h3>
       <div class="form-group">
         <label for="openingBalance">Opening Cash Balance (MWK)</label>
-        <input
-          id="openingBalance"
-          type="number"
-          min="0"
-          step="0.01"
-          bind:value={openingBalance}
-        />
+        <input id="openingBalance" type="number" min="0" step="0.01" bind:value={openingBalance} />
       </div>
       <div class="modal-actions">
-        <button
-          class="btn btn-secondary"
-          on:click={() => (showSessionModal = false)}
-          type="button"
-        >
+        <button class="btn btn-secondary" on:click={() => (showSessionModal = false)} type="button">
           Cancel
         </button>
-        <button class="btn btn-primary" on:click={openSession} type="button">
-          Open Session
-        </button>
+        <button class="btn btn-primary" on:click={openSession} type="button">Open Session</button>
       </div>
     </div>
   </div>
@@ -349,20 +302,6 @@
     line-height: 1;
   }
 
-  .user-avatar {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 34px;
-    height: 34px;
-    border-radius: 50%;
-    background: var(--primary-light, #d1fae5);
-    color: var(--primary-dark, #065f46);
-    margin-left: 0.25rem;
-    flex-shrink: 0;
-  }
-
-  /* ============ MODAL ============ */
   .modal-overlay {
     position: fixed;
     inset: 0;
@@ -454,7 +393,6 @@
     background: var(--background, #f9fafb);
   }
 
-  /* ============ MOBILE ============ */
   @media (max-width: 768px) {
     .topbar {
       padding: 0 0.75rem;
@@ -482,18 +420,13 @@
       padding: 0.4rem;
     }
 
-    .user-avatar {
-      width: 30px;
-      height: 30px;
-    }
-
     .session-badge {
       padding: 0.3rem 0.6rem;
       font-size: 0.75rem;
     }
 
     .session-badge span {
-      display: none; /* show only the dot on mobile */
+      display: none;
     }
   }
 

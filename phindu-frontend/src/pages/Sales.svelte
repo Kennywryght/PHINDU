@@ -1,46 +1,46 @@
 <script>
-  import { onMount } from 'svelte';
-  import { Plus, X, Trash2, AlertTriangle, UserPlus } from 'lucide-svelte';
-  import Layout from '../components/Layout.svelte';
-  import API from '../api/api';
+  import { onMount } from "svelte";
+  import { Plus, X, Trash2, AlertTriangle, UserPlus } from "lucide-svelte";
+  import Layout from "../components/Layout.svelte";
+  import API from "../api/api";
 
   let sales = [];
   let products = [];
   let customers = [];
   let showForm = false;
-  let saleItems = [{ product_id: '', quantity: 1 }];
+  let saleItems = [{ product_id: "", quantity: 1 }];
   let loading = false;
 
   let isCreditSale = false;
   let selectedCustomerId = null;
   let showNewCustomerModal = false;
-  let newCustomer = { name: '', phone: '', email: '', address: '' };
+  let newCustomer = { name: "", phone: "", email: "", address: "" };
 
   let voidModalOpen = false;
   let selectedSale = null;
-  let voidReason = '';
+  let voidReason = "";
 
   onMount(async () => {
     await Promise.all([fetchSales(), fetchProducts(), fetchCustomers()]);
   });
 
   async function fetchSales() {
-    const res = await API.get('/sales/');
+    const res = await API.get("/sales/");
     sales = res.data;
   }
 
   async function fetchProducts() {
-    const res = await API.get('/products/');
+    const res = await API.get("/products/");
     products = res.data.filter((p) => !p.archived);
   }
 
   async function fetchCustomers() {
-    const res = await API.get('/customers/');
+    const res = await API.get("/customers/");
     customers = res.data;
   }
 
   function addItem() {
-    saleItems = [...saleItems, { product_id: '', quantity: 1 }];
+    saleItems = [...saleItems, { product_id: "", quantity: 1 }];
   }
 
   function removeItem(index) {
@@ -55,7 +55,7 @@
       const payload = {
         items,
         customer_id: isCreditSale ? selectedCustomerId : null,
-        payment_status: isCreditSale ? 'unpaid' : 'paid',
+        payment_status: isCreditSale ? "unpaid" : "paid",
         amount_paid: isCreditSale
           ? 0
           : items.reduce((sum, i) => {
@@ -63,18 +63,18 @@
               return sum + (p ? p.selling_price * i.quantity : 0);
             }, 0),
       };
-      await API.post('/sales/', payload);
+      await API.post("/sales/", payload);
       resetForm();
       fetchSales();
     } catch (err) {
-      alert('Failed to create sale: ' + (err.response?.data?.detail || 'Unknown error'));
+      alert("Failed to create sale: " + (err.response?.data?.detail || "Unknown error"));
     } finally {
       loading = false;
     }
   }
 
   function resetForm() {
-    saleItems = [{ product_id: '', quantity: 1 }];
+    saleItems = [{ product_id: "", quantity: 1 }];
     isCreditSale = false;
     selectedCustomerId = null;
     showForm = false;
@@ -82,13 +82,13 @@
 
   async function createCustomer() {
     try {
-      const res = await API.post('/customers/', newCustomer);
+      const res = await API.post("/customers/", newCustomer);
       customers = [...customers, res.data];
       selectedCustomerId = res.data.id;
       showNewCustomerModal = false;
-      newCustomer = { name: '', phone: '', email: '', address: '' };
-    } catch (err) {
-      alert('Failed to create customer');
+      newCustomer = { name: "", phone: "", email: "", address: "" };
+    } catch {
+      alert("Failed to create customer");
     }
   }
 
@@ -101,31 +101,27 @@
       await fetchSales();
       closeVoidModal();
     } catch (err) {
-      alert('Failed to void sale: ' + (err.response?.data?.detail || 'Unknown error'));
+      alert("Failed to void sale: " + (err.response?.data?.detail || "Unknown error"));
     }
   }
 
   function openVoidModal(sale) {
     selectedSale = sale;
-    voidReason = '';
+    voidReason = "";
     voidModalOpen = true;
   }
 
   function closeVoidModal() {
     voidModalOpen = false;
     selectedSale = null;
-    voidReason = '';
+    voidReason = "";
   }
 </script>
 
 <Layout title="Sales">
   <div class="sales-header">
     <h2>Recent Sales</h2>
-    <button
-      class="btn btn-primary"
-      on:click={() => (showForm = !showForm)}
-      type="button"
-    >
+    <button class="btn btn-primary" on:click={() => (showForm = !showForm)} type="button">
       {#if showForm}
         <X size={16} strokeWidth={2} /> Cancel
       {:else}
@@ -146,7 +142,12 @@
             {/each}
           </select>
           <input type="number" min="1" bind:value={item.quantity} placeholder="Qty" />
-          <button class="btn-icon" on:click={() => removeItem(i)} type="button" aria-label="Remove item">
+          <button
+            class="btn-icon"
+            on:click={() => removeItem(i)}
+            type="button"
+            aria-label="Remove item"
+          >
             <X size={16} strokeWidth={2} />
           </button>
         </div>
@@ -166,7 +167,7 @@
             <select id="customer" bind:value={selectedCustomerId}>
               <option value={null}>-- Select customer --</option>
               {#each customers as c}
-                <option value={c.id}>{c.name}{c.phone ? ` (${c.phone})` : ''}</option>
+                <option value={c.id}>{c.name}{c.phone ? ` (${c.phone})` : ""}</option>
               {/each}
             </select>
             <button
@@ -183,7 +184,7 @@
 
       <div class="form-actions">
         <button class="btn btn-primary" on:click={submitSale} disabled={loading} type="button">
-          {loading ? 'Saving...' : 'Record Sale'}
+          {loading ? "Saving..." : "Record Sale"}
         </button>
       </div>
     </div>
@@ -208,13 +209,13 @@
           <tbody>
             {#each sales as sale}
               <tr>
-                <td>{sale.products?.join(', ') || '—'}</td>
+                <td>{sale.products?.join(", ") || "—"}</td>
                 <td><strong>MWK {sale.total_amount?.toLocaleString()}</strong></td>
                 <td>{new Date(sale.created_at).toLocaleString()}</td>
                 <td>
                   {#if sale.is_voided}
                     <span class="badge voided">Voided</span>
-                  {:else if sale.payment_status === 'unpaid'}
+                  {:else if sale.payment_status === "unpaid"}
                     <span class="badge credit">Credit</span>
                   {:else}
                     <span class="badge paid">Paid</span>
@@ -248,21 +249,17 @@
               <strong>MWK {sale.total_amount?.toLocaleString()}</strong>
               {#if sale.is_voided}
                 <span class="badge voided">Voided</span>
-              {:else if sale.payment_status === 'unpaid'}
+              {:else if sale.payment_status === "unpaid"}
                 <span class="badge credit">Credit</span>
               {:else}
                 <span class="badge paid">Paid</span>
               {/if}
             </div>
-            <p class="sale-products">{sale.products?.join(', ') || 'No items'}</p>
+            <p class="sale-products">{sale.products?.join(", ") || "No items"}</p>
             <div class="sale-card-footer">
               <span class="sale-date">{new Date(sale.created_at).toLocaleString()}</span>
               {#if !sale.is_voided}
-                <button
-                  class="btn-icon danger"
-                  on:click={() => openVoidModal(sale)}
-                  type="button"
-                >
+                <button class="btn-icon danger" on:click={() => openVoidModal(sale)} type="button">
                   <Trash2 size={14} strokeWidth={2} /> Void
                 </button>
               {/if}
@@ -274,7 +271,14 @@
   </div>
 
   {#if voidModalOpen}
-    <div class="modal-overlay" role="dialog" aria-modal="true" tabindex="-1" on:click|self={closeVoidModal}>
+    <div
+      class="modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      tabindex="-1"
+      on:click|self={closeVoidModal}
+      on:keydown={(e) => e.key === "Escape" && closeVoidModal()}
+    >
       <div class="modal">
         <h3><AlertTriangle size={20} strokeWidth={2} /> Void Sale</h3>
         <p>Are you sure you want to void this sale? Stock will be restored.</p>
@@ -296,7 +300,14 @@
   {/if}
 
   {#if showNewCustomerModal}
-    <div class="modal-overlay" role="dialog" aria-modal="true" tabindex="-1" on:click|self={() => (showNewCustomerModal = false)}>
+    <div
+      class="modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      tabindex="-1"
+      on:click|self={() => (showNewCustomerModal = false)}
+      on:keydown={(e) => e.key === "Escape" && (showNewCustomerModal = false)}
+    >
       <div class="modal">
         <h3>Add New Customer</h3>
         <div class="form-group">
@@ -320,13 +331,17 @@
             class="btn btn-secondary"
             on:click={() => (showNewCustomerModal = false)}
             type="button"
-          >Cancel</button>
+          >
+            Cancel
+          </button>
           <button
             class="btn btn-primary"
             on:click={createCustomer}
             disabled={!newCustomer.name}
             type="button"
-          >Save</button>
+          >
+            Save
+          </button>
         </div>
       </div>
     </div>

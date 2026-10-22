@@ -1,8 +1,11 @@
-from sqlalchemy import Column, String, Float, ForeignKey, DateTime, Boolean
-from sqlalchemy.orm import relationship
-from app.db.session import Base
 import uuid
 from datetime import datetime
+
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, String
+from sqlalchemy.orm import relationship
+
+from app.db.session import Base
+
 
 class Sale(Base):
     __tablename__ = "sales"
@@ -23,6 +26,8 @@ class Sale(Base):
     session = relationship("Session", back_populates="sales")
     customer = relationship("Customer", back_populates="sales")
     items = relationship("SaleItem", back_populates="sale")
+    payments = relationship("Payment", back_populates="sale")  # 🔧 NEW
+
 
 class SaleItem(Base):
     __tablename__ = "sale_items"
@@ -40,4 +45,3 @@ class SaleItem(Base):
     shop = relationship("Shop", back_populates="sale_items")
     sale = relationship("Sale", back_populates="items")
     product = relationship("Product", back_populates="sale_items")
-    

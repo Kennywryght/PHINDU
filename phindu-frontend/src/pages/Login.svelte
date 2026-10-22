@@ -1,36 +1,36 @@
 <script>
-  import { login } from '../stores/auth.js';
-  import { Mail, Lock, Eye, EyeOff, AlertCircle } from 'lucide-svelte';
+  import { login } from "../stores/auth.js";
+  import { Mail, Lock, Eye, EyeOff, AlertCircle } from "lucide-svelte";
 
-  let email = '';
-  let password = '';
+  let email = "";
+  let password = "";
   let showPassword = false;
   let loading = false;
-  let error = '';
+  let error = "";
 
   async function handleSubmit() {
     if (!email || !password) {
-      error = 'Email and password are required';
+      error = "Email and password are required";
       return;
     }
     loading = true;
-    error = '';
+    error = "";
     try {
       await login(email, password);
       if (window.navigate) {
-        window.navigate('/');
+        window.navigate("/");
       } else {
-        window.location.href = '/';
+        window.location.href = "/";
       }
-    } catch (err) {
-      error = err.response?.data?.detail || 'Invalid email or password';
+    } catch {
+      error = err.response?.data?.detail || "Invalid email or password";
     } finally {
       loading = false;
     }
   }
 
   function goToRegister() {
-    window.location.href = '/register';
+    window.location.href = "/register";
   }
 </script>
 
@@ -64,7 +64,7 @@
           <Lock size={18} strokeWidth={1.75} class="icon" />
           <input
             id="password"
-            type={showPassword ? 'text' : 'password'}
+            type={showPassword ? "text" : "password"}
             bind:value={password}
             placeholder="••••••••"
             required
@@ -75,7 +75,7 @@
             class="toggle-password"
             on:click={() => (showPassword = !showPassword)}
             tabindex="-1"
-            aria-label={showPassword ? 'Hide password' : 'Show password'}
+            aria-label={showPassword ? "Hide password" : "Show password"}
           >
             {#if showPassword}
               <EyeOff size={18} strokeWidth={1.75} />
@@ -128,7 +128,7 @@
 
   .auth-container::before,
   .auth-container::after {
-    content: '';
+    content: "";
     position: absolute;
     width: 300px;
     height: 300px;
@@ -214,15 +214,12 @@
     display: flex;
     align-items: center;
   }
-
-  .input-icon :global(.icon),
-  .icon {
+  .input-icon :global(.icon) {
     position: absolute;
     left: 1rem;
     color: #94a3b8;
     pointer-events: none;
   }
-
   .input-icon input {
     width: 100%;
     padding: 0.85rem 1rem 0.85rem 2.75rem;
@@ -328,7 +325,7 @@
 
   .divider::before,
   .divider::after {
-    content: '';
+    content: "";
     flex: 1;
     border-bottom: 1px solid #e2e8f0;
   }

@@ -1,9 +1,9 @@
 <script>
-  import { onMount } from 'svelte';
-  import { RefreshCw, TrendingUp, Calendar } from 'lucide-svelte';
-  import Layout from '../components/Layout.svelte';
-  import MetricCard from '../components/MetricCard.svelte';
-  import API from '../api/api';
+  import { onMount } from "svelte";
+  import { RefreshCw, TrendingUp, Calendar } from "lucide-svelte";
+  import Layout from "../components/Layout.svelte";
+  import MetricCard from "../components/MetricCard.svelte";
+  import API from "../api/api";
 
   let data = {
     total_revenue: 0,
@@ -28,21 +28,21 @@
     loading = true;
     error = null;
     try {
-      const sessionRes = await API.get('/sessions/current');
+      const sessionRes = await API.get("/sessions/current");
       if (sessionRes.data.id) {
         currentSession = sessionRes.data;
       }
 
-      const sessionParam = currentSession ? `?session_id=${currentSession.id}` : '';
+      const sessionParam = currentSession ? `?session_id=${currentSession.id}` : "";
       const [dashRes, trendRes] = await Promise.all([
         API.get(`/dashboard/${sessionParam}`),
-        API.get('/analytics/revenue-trend'),
+        API.get("/analytics/revenue-trend"),
       ]);
 
       data = Array.isArray(dashRes.data) ? dashRes.data[0] : dashRes.data;
       chartData = trendRes.data;
-    } catch (err) {
-      error = 'Failed to load dashboard data';
+    } catch {
+      error = "Failed to load dashboard data";
       console.error(err);
     } finally {
       loading = false;
@@ -51,13 +51,11 @@
 
   function formatDate(isoString) {
     const d = new Date(isoString);
-    return d.toLocaleDateString(undefined, { weekday: 'short' });
+    return d.toLocaleDateString(undefined, { weekday: "short" });
   }
 
   // Guard against division by zero and produce a sane max for chart scaling
-  $: maxRevenue = chartData.length > 0
-    ? Math.max(...chartData.map((d) => d.revenue), 1)
-    : 1;
+  $: maxRevenue = chartData.length > 0 ? Math.max(...chartData.map((d) => d.revenue), 1) : 1;
 </script>
 
 <Layout title="Dashboard">
@@ -168,7 +166,9 @@
   }
 
   @keyframes spin {
-    to { transform: rotate(360deg); }
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .btn {
@@ -199,11 +199,6 @@
     margin-bottom: 1.25rem;
     border-left: 3px solid var(--primary, #0f6b3e);
     line-height: 1.4;
-  }
-
-  .session-info svg {
-    flex-shrink: 0;
-    margin-top: 2px;
   }
 
   .session-info strong {

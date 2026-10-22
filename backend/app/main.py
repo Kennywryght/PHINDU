@@ -1,19 +1,23 @@
 """PHINDU API entry point."""
 
 from fastapi import FastAPI
-from sqlalchemy import text
-from app.db.session import engine, Base
-from app.api.routes import products
-from app.api.routes import sales
-from app.api.routes import analytics
-from app.api.routes import dashboard
-from app.api.routes import expenses
-from app.api.routes import alerts
-from app.api.routes import sessions
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.routes import customers
-from app.api.routes import auth
 from fastapi.security import OAuth2PasswordBearer
+
+# Import ALL models so Base.metadata.create_all() sees every table
+import app.db.models  # noqa: F401
+from app.api.routes import (
+    alerts,
+    analytics,
+    auth,
+    customers,
+    dashboard,
+    expenses,
+    products,
+    sales,
+    sessions,
+)
+from app.db.session import Base, engine
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
@@ -26,14 +30,15 @@ app = FastAPI(
         "usePkceWithAuthorizationCodeGrant": False,
     },
 )
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
-        "https://phindu-sb.vercel.app",          # ← your Vercel production domain
+        "https://phindu-sb.vercel.app",
     ],
-    allow_origin_regex=r"https://.*\.vercel\.app",  # ← allows Vercel preview deploys
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -50,56 +55,13 @@ app.include_router(sessions.router)
 app.include_router(customers.router)
 app.include_router(auth.router)
 
-# Create tables
+# Create tables — safe because this is idempotent (only creates missing tables)
 Base.metadata.create_all(bind=engine)
-
-# Ensure existing SQLite DB schema has any new columns
-if engine.url.drivername == "sqlite":
-    with engine.begin() as conn:
-        # ── sale_items columns ─────────────────────────────────────
-        existing_columns = [row[1] for row in conn.execute(text("PRAGMA table_info(sale_items)"))]
-        if "cost_price" not in existing_columns:
-            conn.execute(text("ALTER TABLE sale_items ADD COLUMN cost_price FLOAT DEFAULT 0"))
-        # 🔧 FIX: shop_id was added to the model but never migrated
-        if "shop_id" not in existing_columns:
-            conn.execute(text("ALTER TABLE sale_items ADD COLUMN shop_id VARCHAR REFERENCES shops(id)"))
-            conn.execute(text("""
-                UPDATE sale_items
-                SET shop_id = (SELECT shop_id FROM sales WHERE sales.id = sale_items.sale_id)
-                WHERE shop_id IS NULL
-            """))
-
-        # ── products columns ───────────────────────────────────────
-        existing_columns = [row[1] for row in conn.execute(text("PRAGMA table_info(products)"))]
-        if "is_deleted" not in existing_columns:
-            conn.execute(text("ALTER TABLE products ADD COLUMN is_deleted BOOLEAN DEFAULT 0"))
-        if "archived" not in existing_columns:
-            conn.execute(text("ALTER TABLE products ADD COLUMN archived BOOLEAN DEFAULT 0"))
-
-        # ── sales columns – add session_id ─────────────────────────
-        existing_columns = [row[1] for row in conn.execute(text("PRAGMA table_info(sales)"))]
-        if "session_id" not in existing_columns:
-            conn.execute(text("ALTER TABLE sales ADD COLUMN session_id VARCHAR REFERENCES sessions(id)"))
-
-        # ── expenses columns – add session_id ──────────────────────
-        existing_columns = [row[1] for row in conn.execute(text("PRAGMA table_info(expenses)"))]
-        if "session_id" not in existing_columns:
-            conn.execute(text("ALTER TABLE expenses ADD COLUMN session_id VARCHAR REFERENCES sessions(id)"))
-
-        # ── stock_batches columns – add shop_id ────────────────────  🔧 NEW
-        existing_columns = [row[1] for row in conn.execute(text("PRAGMA table_info(stock_batches)"))]
-        if "shop_id" not in existing_columns:
-            conn.execute(text("ALTER TABLE stock_batches ADD COLUMN shop_id VARCHAR REFERENCES shops(id)"))
-            conn.execute(text("""
-                UPDATE stock_batches
-                SET shop_id = (SELECT shop_id FROM products WHERE products.id = stock_batches.product_id)
-                WHERE shop_id IS NULL
-            """))
 
 
 @app.get("/")
 def root():
-    return {"message": "PHINDU BACKEND RUNNING small businesses sales & insights  🔥"}
+    return {"message": "PHINDU BACKEND RUNNING small businesses sales & insights 🔥"}
 
 
 @app.get("/ping")

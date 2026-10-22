@@ -1,8 +1,8 @@
 <script>
-  import { onMount } from 'svelte';
-  import { AlertTriangle, CheckCircle2, Package } from 'lucide-svelte';
-  import Layout from '../components/Layout.svelte';
-  import API from '../api/api';
+  import { onMount } from "svelte";
+  import { AlertTriangle, CheckCircle2, Package } from "lucide-svelte";
+  import Layout from "../components/Layout.svelte";
+  import API from "../api/api";
 
   let lowStock = [];
   let loading = true;
@@ -10,10 +10,10 @@
 
   onMount(async () => {
     try {
-      const res = await API.get('/alerts/low-stock');
+      const res = await API.get("/alerts/low-stock");
       lowStock = res.data;
-    } catch (err) {
-      error = 'Could not fetch low stock alerts.';
+    } catch {
+      error = "Could not fetch low stock alerts.";
       console.error(err);
     } finally {
       loading = false;
@@ -57,7 +57,7 @@
               </div>
               <div class="detail-item">
                 <span>Category</span>
-                <strong>{product.category || '—'}</strong>
+                <strong>{product.category || "—"}</strong>
               </div>
               <div class="detail-item">
                 <span>Selling Price</span>
@@ -67,7 +67,7 @@
             <div class="card-actions">
               <button
                 class="btn btn-primary"
-                on:click={() => (window.location.href = '/products')}
+                on:click={() => (window.location.href = "/products")}
                 type="button"
               >
                 Manage Product
@@ -120,10 +120,6 @@
   .success-card {
     text-align: center;
     padding: 2.5rem 1.5rem;
-  }
-  .success-icon {
-    color: var(--success, #16a34a);
-    margin-bottom: 1rem;
   }
   .success-card h3 {
     margin: 0 0 0.5rem;

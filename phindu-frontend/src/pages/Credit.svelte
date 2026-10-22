@@ -1,8 +1,8 @@
 <script>
-  import { onMount } from 'svelte';
-  import { CreditCard, DollarSign, PartyPopper } from 'lucide-svelte';
-  import Layout from '../components/Layout.svelte';
-  import API from '../api/api';
+  import { onMount } from "svelte";
+  import { CreditCard, DollarSign, PartyPopper } from "lucide-svelte";
+  import Layout from "../components/Layout.svelte";
+  import API from "../api/api";
 
   let debtors = [];
   let loading = true;
@@ -15,10 +15,10 @@
   async function fetchDebtors() {
     loading = true;
     try {
-      const res = await API.get('/customers/debtors');
+      const res = await API.get("/customers/debtors");
       debtors = res.data;
     } catch (err) {
-      console.error('Failed to fetch debtors', err);
+      console.error("Failed to fetch debtors", err);
     } finally {
       loading = false;
     }
@@ -38,8 +38,8 @@
       });
       await fetchDebtors();
       showPaymentModal = false;
-    } catch (err) {
-      alert('Payment failed');
+    } catch {
+      alert("Payment failed");
     }
   }
 </script>
@@ -58,7 +58,7 @@
       <p class="state-text">Loading...</p>
     {:else if debtors.length === 0}
       <div class="card empty-card">
-        <PartyPopper size={48} strokeWidth={1.5} class="celebrate-icon" />
+        <PartyPopper size={48} strokeWidth={1.5} />
         <h3>No outstanding credit</h3>
         <p>Every customer is settled up.</p>
       </div>
@@ -78,10 +78,14 @@
             {#each debtors as debtor}
               <tr>
                 <td><strong>{debtor.name}</strong></td>
-                <td>{debtor.phone || '—'}</td>
+                <td>{debtor.phone || "—"}</td>
                 <td><strong class="amount">MWK {debtor.total_credit?.toLocaleString()}</strong></td>
                 <td>
-                  <button class="btn btn-sm btn-primary" on:click={() => openPaymentModal(debtor)} type="button">
+                  <button
+                    class="btn btn-sm btn-primary"
+                    on:click={() => openPaymentModal(debtor)}
+                    type="button"
+                  >
                     <DollarSign size={14} strokeWidth={2} /> Record Payment
                   </button>
                 </td>
@@ -99,8 +103,12 @@
               <h3>{debtor.name}</h3>
               <span class="amount">MWK {debtor.total_credit?.toLocaleString()}</span>
             </div>
-            <p class="phone-line">{debtor.phone || 'No phone'}</p>
-            <button class="btn btn-primary btn-block" on:click={() => openPaymentModal(debtor)} type="button">
+            <p class="phone-line">{debtor.phone || "No phone"}</p>
+            <button
+              class="btn btn-primary btn-block"
+              on:click={() => openPaymentModal(debtor)}
+              type="button"
+            >
               <DollarSign size={14} strokeWidth={2} /> Record Payment
             </button>
           </div>
@@ -110,13 +118,22 @@
   </div>
 
   {#if showPaymentModal}
-    <div class="modal-overlay" role="dialog" aria-modal="true" tabindex="-1" on:click|self={() => (showPaymentModal = false)}>
+    <div
+      class="modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      tabindex="-1"
+      on:click|self={() => (showPaymentModal = false)}
+      on:keydown={(e) => e.key === "Escape" && (showPaymentModal = false)}
+    >
       <div class="modal">
         <h3>
           <DollarSign size={18} strokeWidth={2} />
           Record Payment — {selectedDebtor?.name}
         </h3>
-        <p class="modal-info">Current balance: MWK {selectedDebtor?.total_credit?.toLocaleString()}</p>
+        <p class="modal-info">
+          Current balance: MWK {selectedDebtor?.total_credit?.toLocaleString()}
+        </p>
         <div class="form-group">
           <label for="paymentAmt">Amount (MWK)</label>
           <input
@@ -129,7 +146,13 @@
           />
         </div>
         <div class="modal-actions">
-          <button class="btn btn-secondary" on:click={() => (showPaymentModal = false)} type="button">Cancel</button>
+          <button
+            class="btn btn-secondary"
+            on:click={() => (showPaymentModal = false)}
+            type="button"
+          >
+            Cancel
+          </button>
           <button class="btn btn-primary" on:click={recordPayment} type="button">Save</button>
         </div>
       </div>
@@ -173,10 +196,6 @@
   .empty-card {
     text-align: center;
     padding: 2.5rem 1.5rem;
-  }
-  .celebrate-icon {
-    color: var(--success, #16a34a);
-    margin-bottom: 0.75rem;
   }
   .empty-card h3 {
     margin: 0 0 0.4rem;

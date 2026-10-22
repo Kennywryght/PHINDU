@@ -17,9 +17,8 @@ Usage in routes:
 
 from fastapi import Depends, HTTPException, status
 
-from app.db.models.user import User
 from app.api.routes.auth import get_current_user
-
+from app.db.models.user import User
 
 ROLE_HIERARCHY = {
     "cashier": 0,

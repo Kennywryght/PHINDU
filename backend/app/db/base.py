@@ -1,9 +1,7 @@
 """Package exports for database base and model references."""
 
+from app.db.models import expense, price_history, product, sale, stock
 from app.db.session import Base
-from app.db.models import product, sale, stock
-from app.db.models import price_history
-from app.db.models import expense
 
 __all__ = [
     "Base",
@@ -13,4 +11,3 @@ __all__ = [
     "price_history",
     "expense",
 ]
- 

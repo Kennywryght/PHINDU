@@ -1,13 +1,13 @@
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy.orm import Session
 from sqlalchemy import func
+from sqlalchemy.orm import Session
 
-from app.db.session import get_db
-from app.db.models.sale import Sale, SaleItem
-from app.db.models.expense import Expense
-from app.db.models.product import Product                      # 🔧 added for name lookup
-from app.db.models.session import Session as SessionModel
 from app.api.dependencies import get_current_shop_id
+from app.db.models.expense import Expense
+from app.db.models.product import Product  # 🔧 added for name lookup
+from app.db.models.sale import Sale, SaleItem
+from app.db.models.session import Session as SessionModel
+from app.db.session import get_db
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
 
@@ -24,7 +24,7 @@ def get_dashboard(
             db.query(SessionModel)
             .filter(
                 SessionModel.is_active == True,
-                SessionModel.shop_id == shop_id,          # 🔧 FIX #2: shop filter
+                SessionModel.shop_id == shop_id,  # 🔧 FIX #2: shop filter
             )
             .first()
         )
@@ -45,12 +45,12 @@ def get_dashboard(
 
     for item in items:
         total_revenue += item.total_price
-        total_cost += item.cost_price or 0               # 🔧 FIX #3: cost_price is already total
+        total_cost += item.cost_price or 0  # 🔧 FIX #3: cost_price is already total
         total_quantity += item.quantity
         product_sales[item.product_id] = product_sales.get(item.product_id, 0) + item.quantity
 
     # Total expenses – also filter by session
-    expenses_query = db.query(func.sum(Expense.amount)).filter(   # 🔧 FIX #1: valid query
+    expenses_query = db.query(func.sum(Expense.amount)).filter(  # 🔧 FIX #1: valid query
         Expense.shop_id == shop_id
     )
     if session_id:
@@ -88,7 +88,7 @@ def get_dashboard(
         "top_products": top_products,
         "best_product": best_product,
         "worst_product": worst_product,
-        "avg_sale_value": avg_item_price,     # kept key for frontend compatibility
+        "avg_sale_value": avg_item_price,  # kept key for frontend compatibility
         "profit_margin": profit_margin,
         "total_expenses": total_expenses,
     }

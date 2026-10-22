@@ -1,16 +1,18 @@
 from pydantic import BaseModel
-from typing import List, Optional
+
 
 class SaleItemCreate(BaseModel):
     product_id: str
     quantity: float
-    unit: Optional[str] = None
+    unit: str | None = None
+
 
 class SaleCreate(BaseModel):
-    items: List[SaleItemCreate]
-    customer_id: Optional[str] = None
+    items: list[SaleItemCreate]
+    customer_id: str | None = None
     payment_status: str = "paid"
     amount_paid: float = 0.0
+
 
 class SaleResponse(BaseModel):
     id: str
@@ -19,12 +21,14 @@ class SaleResponse(BaseModel):
     class Config:
         from_attributes = True
 
+
 class BulkSaleItem(BaseModel):
-    id: str          # <-- changed from UUID to str
+    id: str  # <-- changed from UUID to str
     qty: float
 
+
 class BulkSaleCreate(BaseModel):
-    items: List[BulkSaleItem]
-    customer_id: Optional[str] = None
+    items: list[BulkSaleItem]
+    customer_id: str | None = None
     payment_status: str = "paid"
     amount_paid: float = 0.0

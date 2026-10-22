@@ -8,6 +8,7 @@ the previous bug where DATABASE_URL from .env was silently ignored.
 
 import os
 from pathlib import Path
+
 from dotenv import load_dotenv
 
 # Path to backend/.env — resolved from this file's location so it works
@@ -26,7 +27,7 @@ if not SECRET_KEY:
     raise RuntimeError(
         "SECRET_KEY is not set. Add it to backend/.env:\n"
         "  SECRET_KEY=<64-char random hex>\n"
-        "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
+        'Generate one with: python -c "import secrets; print(secrets.token_hex(32))"'
     )
 
 ALGORITHM = "HS256"

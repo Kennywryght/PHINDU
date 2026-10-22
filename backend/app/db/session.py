@@ -6,10 +6,9 @@ Adds SQLite-specific connect_args to fix FastAPI's thread-safety issue.
 """
 
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.orm import declarative_base, sessionmaker
 
 from app.core.config import DATABASE_URL
-
 
 # Normalize Render's legacy "postgres://" scheme to SQLAlchemy's expected form
 if DATABASE_URL.startswith("postgres://"):
@@ -17,9 +16,7 @@ if DATABASE_URL.startswith("postgres://"):
 
 
 # SQLite needs check_same_thread=False for FastAPI's threadpool workers.
-_connect_args = (
-    {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-)
+_connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 
 engine = create_engine(
     DATABASE_URL,

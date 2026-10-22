@@ -1,19 +1,19 @@
 <script>
-  import { createEventDispatcher } from 'svelte';
-  import { Minus, Plus, Trash2 } from 'lucide-svelte';
+  import { createEventDispatcher } from "svelte";
+  import { Minus, Plus, Trash2 } from "lucide-svelte";
 
   export let item;
   const dispatch = createEventDispatcher();
 
   function increment() {
-    dispatch('update', { qty: item.qty + 1 });
+    dispatch("update", { qty: item.qty + 1 });
   }
 
   function decrement() {
     if (item.qty > 1) {
-      dispatch('update', { qty: item.qty - 1 });
+      dispatch("update", { qty: item.qty - 1 });
     } else {
-      dispatch('remove');
+      dispatch("remove");
     }
   }
 </script>
@@ -31,7 +31,12 @@
     <button on:click={increment} type="button" aria-label="Increase quantity">
       <Plus size={14} strokeWidth={2.5} />
     </button>
-    <button class="remove" on:click={() => dispatch('remove')} type="button" aria-label="Remove item">
+    <button
+      class="remove"
+      on:click={() => dispatch("remove")}
+      type="button"
+      aria-label="Remove item"
+    >
       <Trash2 size={14} strokeWidth={2} />
     </button>
   </div>

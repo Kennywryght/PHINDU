@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount } from "svelte";
   import {
     BarChart3,
     Trophy,
@@ -8,12 +8,12 @@
     Receipt,
     FileSpreadsheet,
     Package,
-  } from 'lucide-svelte';
-  import Layout from '../components/Layout.svelte';
-  import API from '../api/api';
-  import * as XLSX from 'xlsx';
+  } from "lucide-svelte";
+  import Layout from "../components/Layout.svelte";
+  import API from "../api/api";
+  import * as XLSX from "xlsx";
 
-  let period = 'day';
+  let period = "day";
   let topProducts = [];
   let loading = false;
   let error = null;
@@ -42,14 +42,14 @@
 
   async function fetchInsights() {
     try {
-      const res = await API.get('/analytics/insights');
+      const res = await API.get("/analytics/insights");
       insights = res.data;
-    } catch (err) {
+    } catch {
       try {
-        const dashRes = await API.get('/dashboard/');
+        const dashRes = await API.get("/dashboard/");
         dashboard = dashRes.data;
-      } catch (e) {
-        error = 'Unable to load insights data';
+      } catch {
+        error = "Unable to load insights data";
       }
     }
   }
@@ -60,8 +60,8 @@
     try {
       const res = await API.get(`/analytics/top-products?period=${period}`);
       topProducts = res.data;
-    } catch (err) {
-      error = 'Failed to load top products';
+    } catch {
+      error = "Failed to load top products";
     } finally {
       loading = false;
     }
@@ -70,10 +70,10 @@
   async function fetchProfitMargins() {
     marginsLoading = true;
     try {
-      const res = await API.get('/analytics/profit-margins');
+      const res = await API.get("/analytics/profit-margins");
       profitMargins = res.data;
-    } catch (err) {
-      marginsError = 'Failed to load profit margins';
+    } catch {
+      marginsError = "Failed to load profit margins";
     } finally {
       marginsLoading = false;
     }
@@ -82,10 +82,10 @@
   async function fetchPeakHours() {
     peakLoading = true;
     try {
-      const res = await API.get('/analytics/peak-hours');
+      const res = await API.get("/analytics/peak-hours");
       peakHours = res.data.hours;
-    } catch (err) {
-      console.error('Peak hours failed', err);
+    } catch {
+      console.error("Peak hours failed", err);
     } finally {
       peakLoading = false;
     }
@@ -94,45 +94,45 @@
   async function fetchExpenseBreakdown() {
     breakdownLoading = true;
     try {
-      const res = await API.get('/analytics/expense-breakdown');
+      const res = await API.get("/analytics/expense-breakdown");
       expenseBreakdown = res.data;
-    } catch (err) {
-      console.error('Expense breakdown failed', err);
+    } catch {
+      console.error("Expense breakdown failed", err);
     } finally {
       breakdownLoading = false;
     }
   }
 
   async function exportSales() {
-    const res = await API.get('/sales/');
+    const res = await API.get("/sales/");
     const data = res.data.map((s) => ({
-      Products: s.products.join(', '),
+      Products: s.products.join(", "),
       Total: s.total_amount,
       Date: new Date(s.created_at).toLocaleString(),
     }));
     const ws = XLSX.utils.json_to_sheet(data);
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Sales');
-    XLSX.writeFile(wb, `phindu_sales_${new Date().toISOString().split('T')[0]}.xlsx`);
+    XLSX.utils.book_append_sheet(wb, ws, "Sales");
+    XLSX.writeFile(wb, `phindu_sales_${new Date().toISOString().split("T")[0]}.xlsx`);
   }
 
   async function exportProducts() {
-    const res = await API.get('/products/');
+    const res = await API.get("/products/");
     const data = res.data.map((p) => ({
       Name: p.name,
       Category: p.category,
-      'Selling Price': p.selling_price,
-      'Purchase Price': p.purchase_price,
+      "Selling Price": p.selling_price,
+      "Purchase Price": p.purchase_price,
       Stock: p.stock_qty,
-      Status: p.archived ? 'Archived' : p.is_deleted ? 'Deleted' : 'Active',
+      Status: p.archived ? "Archived" : p.is_deleted ? "Deleted" : "Active",
     }));
     const ws = XLSX.utils.json_to_sheet(data);
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Products');
-    XLSX.writeFile(wb, `phindu_products_${new Date().toISOString().split('T')[0]}.xlsx`);
+    XLSX.utils.book_append_sheet(wb, ws, "Products");
+    XLSX.writeFile(wb, `phindu_products_${new Date().toISOString().split("T")[0]}.xlsx`);
   }
 
-  $: period, fetchTopProducts();
+  $: (period, fetchTopProducts());
   $: maxPeak = peakHours.length > 0 ? Math.max(...peakHours, 1) : 1;
 </script>
 
@@ -238,10 +238,7 @@
           <div class="peak-chart">
             {#each peakHours as count, hour}
               <div class="peak-bar-container">
-                <div
-                  class="peak-bar"
-                  style="height: {Math.max(3, (count / maxPeak) * 100)}%"
-                >
+                <div class="peak-bar" style="height: {Math.max(3, (count / maxPeak) * 100)}%">
                   {#if count > 0}
                     <span class="peak-value">{count}</span>
                   {/if}
@@ -297,7 +294,9 @@
         </ul>
       {:else if dashboard}
         <ul class="overview-list">
-          <li><span>Revenue:</span> <strong>MWK {dashboard.total_revenue?.toLocaleString()}</strong></li>
+          <li>
+            <span>Revenue:</span> <strong>MWK {dashboard.total_revenue?.toLocaleString()}</strong>
+          </li>
           <li><span>Profit:</span> <strong>MWK {dashboard.profit?.toLocaleString()}</strong></li>
         </ul>
       {/if}

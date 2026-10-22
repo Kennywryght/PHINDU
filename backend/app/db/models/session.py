@@ -1,8 +1,11 @@
 import uuid
-from sqlalchemy import Column, String, DateTime, Float, Boolean, ForeignKey
-from sqlalchemy.sql import func
+
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, String
 from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
+
 from app.db.session import Base
+
 
 class Session(Base):
     __tablename__ = "sessions"
@@ -18,6 +21,13 @@ class Session(Base):
     is_active = Column(Boolean, default=True)
     notes = Column(String, nullable=True)
 
+    # ── Sprint 3.1 fields ──────────────────────────────────────
+    cash_sales = Column(Float, default=0.0)
+    credit_sales = Column(Float, default=0.0)
+    cash_removed = Column(Float, default=0.0)
+    cash_added = Column(Float, default=0.0)
+
     # Relationships
     shop = relationship("Shop", back_populates="sessions")
     sales = relationship("Sale", back_populates="session")
+    payments = relationship("Payment", back_populates="session")  # 🔧 NEW

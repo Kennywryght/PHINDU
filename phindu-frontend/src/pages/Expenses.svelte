@@ -1,54 +1,54 @@
 <script>
-  import { onMount } from 'svelte';
-  import { Receipt, CheckCircle2, AlertCircle } from 'lucide-svelte';
-  import Layout from '../components/Layout.svelte';
-  import API from '../api/api';
+  import { onMount } from "svelte";
+  import { Receipt, CheckCircle2, AlertCircle } from "lucide-svelte";
+  import Layout from "../components/Layout.svelte";
+  import API from "../api/api";
 
-  let name = '';
-  let amount = '';
-  let category = '';
+  let name = "";
+  let amount = "";
+  let category = "";
   let loading = false;
-  let message = '';
-  let messageType = ''; // 'success' | 'error'
+  let message = "";
+  let messageType = ""; // 'success' | 'error'
   let expenses = [];
 
   onMount(fetchExpenses);
 
   async function fetchExpenses() {
     try {
-      const res = await API.get('/expenses/');
+      const res = await API.get("/expenses/");
       expenses = res.data;
-    } catch (err) {
-      console.error('Failed to fetch expenses', err);
+    } catch {
+      console.error("Failed to fetch expenses", err);
     }
   }
 
   async function handleSubmit() {
     if (!name.trim() || !amount) {
-      message = 'Name and amount are required.';
-      messageType = 'error';
+      message = "Name and amount are required.";
+      messageType = "error";
       return;
     }
 
     loading = true;
-    message = '';
+    message = "";
 
     try {
       // 🔧 FIX: send JSON body, not query params (matches fixed backend)
-      await API.post('/expenses/', {
+      await API.post("/expenses/", {
         name: name.trim(),
         amount: parseFloat(amount),
-        category: category.trim() || 'Uncategorized',
+        category: category.trim() || "Uncategorized",
       });
-      message = 'Expense recorded successfully!';
-      messageType = 'success';
-      name = '';
-      amount = '';
-      category = '';
+      message = "Expense recorded successfully!";
+      messageType = "success";
+      name = "";
+      amount = "";
+      category = "";
       await fetchExpenses();
-    } catch (err) {
-      message = err.response?.data?.detail || 'Failed to record expense. Please try again.';
-      messageType = 'error';
+    } catch {
+      message = err.response?.data?.detail || "Failed to record expense. Please try again.";
+      messageType = "error";
     } finally {
       loading = false;
     }
@@ -101,8 +101,8 @@
         </div>
 
         {#if message}
-          <div class="message" class:error={messageType === 'error'}>
-            {#if messageType === 'error'}
+          <div class="message" class:error={messageType === "error"}>
+            {#if messageType === "error"}
               <AlertCircle size={16} strokeWidth={2} />
             {:else}
               <CheckCircle2 size={16} strokeWidth={2} />
