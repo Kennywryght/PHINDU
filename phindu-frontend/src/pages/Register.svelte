@@ -185,16 +185,13 @@
 </div>
 
 <style>
-  :global(html),
-  :global(body) {
-    height: 100%;
-    margin: 0;
-    overflow: hidden;
-  }
+  /* NOTE: no :global(html)/:global(body) rules here — those used to kill
+     scrolling on every page of the app. The auth screen is pinned to the
+     viewport via position:fixed on .auth-container instead. */
 
   .auth-container {
-    min-height: 100dvh;
-    width: 100%;
+    position: fixed;
+    inset: 0;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -430,6 +427,7 @@
     }
   }
 
+  /* Narrow phones: stack the two password inputs */
   @media (max-width: 420px) {
     .form-row {
       grid-template-columns: 1fr;
@@ -437,6 +435,7 @@
     }
   }
 
+  /* Very short viewports: hide subtitle/footer so the card fits on-screen */
   @media (max-height: 620px) {
     .subtitle {
       display: none;
