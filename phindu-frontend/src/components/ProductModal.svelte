@@ -1,8 +1,10 @@
 <script>
   import { createEventDispatcher, onMount } from "svelte";
-  import { X, Package, TrendingUp } from "lucide-svelte";
+  import { X, Package, TrendingUp, PackagePlus } from "lucide-svelte";
   import API from "../api/api";
   import PriceHistoryModal from "./PriceHistoryModal.svelte";
+  import RestockHistoryModal from "./RestockHistoryModal.svelte";
+  import RestockModal from "./RestockModal.svelte";
 
   export let product = null;
   const dispatch = createEventDispatcher();
@@ -11,6 +13,8 @@
   let loadingParents = true;
   let isVariantMode = false;
   let showHistoryModal = false;
+  let showRestockHistoryModal = false;
+  let showRestockModal = false;
 
   let form = {
     name: "",
@@ -69,7 +73,14 @@
   }
 
   function handleKeydown(e) {
-    if (e.key === "Escape" && !showHistoryModal) close();
+    if (
+      e.key === "Escape" &&
+      !showHistoryModal &&
+      !showRestockHistoryModal &&
+      !showRestockModal
+    ) {
+      close();
+    }
   }
 
   function toggleVariantMode() {
@@ -85,6 +96,31 @@
 
   function closeHistory() {
     showHistoryModal = false;
+  }
+
+  function openRestockHistory() {
+    showRestockHistoryModal = true;
+  }
+
+  function closeRestockHistory() {
+    showRestockHistoryModal = false;
+  }
+
+  function openRestock() {
+    showRestockModal = true;
+  }
+
+  function closeRestock() {
+    showRestockModal = false;
+  }
+
+  function handleRestockSaved(event) {
+    showRestockModal = false;
+    // Update local form stock to reflect added
+    if (event.detail?.product) {
+      form.stock_qty = event.detail.product.stock_qty;
+    }
+    dispatch("restocked", event.detail);
   }
 </script>
 
@@ -201,16 +237,22 @@
         </div>
       </div>
 
-      <!-- 🔧 NEW: Price History button (only for existing products) -->
       {#if product}
-        <button
-          type="button"
-          class="history-btn"
-          on:click={openHistory}
-        >
-          <TrendingUp size={16} strokeWidth={2} />
-          View Price History
-        </button>
+        <!-- Quick actions for existing products -->
+        <div class="quick-actions">
+          <button type="button" class="action-card" on:click={openRestock}>
+            <PackagePlus size={18} strokeWidth={2} />
+            <span>Restock</span>
+          </button>
+          <button type="button" class="action-card" on:click={openRestockHistory}>
+            <Package size={18} strokeWidth={2} />
+            <span>Restocks</span>
+          </button>
+          <button type="button" class="action-card" on:click={openHistory}>
+            <TrendingUp size={18} strokeWidth={2} />
+            <span>Prices</span>
+          </button>
+        </div>
       {/if}
 
       <div class="modal-actions">
@@ -222,10 +264,15 @@
 </div>
 
 {#if showHistoryModal && product}
-  <PriceHistoryModal
-    productId={product.id}
-    on:close={closeHistory}
-  />
+  <PriceHistoryModal productId={product.id} on:close={closeHistory} />
+{/if}
+
+{#if showRestockHistoryModal && product}
+  <RestockHistoryModal productId={product.id} on:close={closeRestockHistory} />
+{/if}
+
+{#if showRestockModal && product}
+  <RestockModal product={product} on:saved={handleRestockSaved} on:close={closeRestock} />
 {/if}
 
 <style>
@@ -267,9 +314,6 @@
   }
 
   .close-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
     background: none;
     border: none;
     cursor: pointer;
@@ -277,7 +321,6 @@
     border-radius: 6px;
     color: var(--text-light, #6b7280);
     line-height: 0;
-    transition: background 0.15s;
   }
 
   .close-btn:hover {
@@ -358,34 +401,42 @@
     box-shadow: 0 0 0 3px rgba(15, 107, 62, 0.1);
   }
 
-  .history-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    width: 100%;
-    justify-content: center;
-    padding: 0.6rem;
-    margin-bottom: 1rem;
+  .quick-actions {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.5rem;
+    margin: 1rem 0;
+    padding: 0.75rem;
     background: var(--background, #f9fafb);
+    border-radius: 10px;
+  }
+
+  .action-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.7rem;
+    background: var(--surface, #fff);
     border: 1px solid var(--border, #e5e7eb);
     border-radius: 8px;
     cursor: pointer;
-    font-size: 0.88rem;
+    font-size: 0.8rem;
     font-weight: 500;
     color: var(--primary, #0f6b3e);
     transition: all 0.15s;
   }
 
-  .history-btn:hover {
-    background: var(--surface, #fff);
+  .action-card:hover {
     border-color: var(--primary, #0f6b3e);
+    background: #f0fdf4;
   }
 
   .modal-actions {
     display: flex;
     justify-content: flex-end;
     gap: 0.6rem;
-    margin-top: 1.25rem;
+    margin-top: 1rem;
   }
 
   .btn {
@@ -423,21 +474,20 @@
     .modal-overlay {
       padding: 0.75rem;
     }
-
     .modal {
       padding: 1.15rem;
       border-radius: 10px;
     }
-
     .form-row {
       grid-template-columns: 1fr;
       gap: 0;
     }
-
+    .quick-actions {
+      grid-template-columns: 1fr;
+    }
     .modal-actions {
       flex-direction: column-reverse;
     }
-
     .modal-actions .btn {
       width: 100%;
       justify-content: center;

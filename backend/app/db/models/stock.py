@@ -11,11 +11,15 @@ class StockBatch(Base):
     __tablename__ = "stock_batches"
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    shop_id = Column(String, ForeignKey("shops.id"), nullable=False)  # <-- add this
+    shop_id = Column(String, ForeignKey("shops.id"), nullable=False)
     product_id = Column(String, ForeignKey("products.id"))
     quantity_added = Column(Float)
     date_added = Column(DateTime, default=datetime.utcnow)
     date_finished = Column(DateTime, nullable=True)
+
+    # 🔧 NEW: cost tracking per restock + optional notes
+    cost_per_unit = Column(Float, nullable=True)
+    notes = Column(String, nullable=True)
 
     # Relationships
     shop = relationship("Shop", back_populates="stock_batches")

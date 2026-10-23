@@ -10,19 +10,24 @@
     ChevronDown,
     ChevronRight,
     Layers,
+    PackagePlus,
   } from "lucide-svelte";
   import Layout from "../components/Layout.svelte";
   import ProductModal from "../components/ProductModal.svelte";
+  import RestockModal from "../components/RestockModal.svelte";
   import API from "../api/api";
 
-  let products = []; // flat list from API
-  let variantsByParent = {}; // { parent_id: [variants] }
-  let grouped = []; // [{parent, variants: []}]
-  let expanded = {}; // { parent_id: bool }
+  let products = [];
+  let grouped = [];
+  let expanded = {};
   let loading = true;
   let showModal = false;
   let editingProduct = null;
   let filter = "all";
+
+  // Restock modal
+  let showRestockModal = false;
+  let restockingProduct = null;
 
   onMount(fetchProducts);
 
@@ -36,7 +41,6 @@
       const res = await API.get(url);
       let filtered = res.data;
 
-      // Client-side filter
       if (filter === "active") {
         filtered = filtered.filter((p) => !p.archived && !p.is_deleted);
       } else if (filter === "archived") {
@@ -111,7 +115,7 @@
     try {
       await API.put(`/products/archive/${id}`);
       fetchProducts();
-    } catch (err) {
+    } catch {
       alert("Archive failed");
     }
   }
@@ -120,7 +124,7 @@
     try {
       await API.put(`/products/unarchive/${id}`);
       fetchProducts();
-    } catch (err) {
+    } catch {
       alert("Unarchive failed");
     }
   }
@@ -129,7 +133,7 @@
     try {
       await API.put(`/products/restore/${id}`);
       fetchProducts();
-    } catch (err) {
+    } catch {
       alert("Restore failed");
     }
   }
@@ -142,6 +146,21 @@
   function closeModal() {
     showModal = false;
     editingProduct = null;
+  }
+
+  function openRestockModal(product) {
+    restockingProduct = product;
+    showRestockModal = true;
+  }
+
+  function closeRestockModal() {
+    showRestockModal = false;
+    restockingProduct = null;
+  }
+
+  function handleRestockSaved() {
+    closeRestockModal();
+    fetchProducts();
   }
 </script>
 
@@ -261,6 +280,16 @@
                         <RotateCcw size={16} strokeWidth={2} />
                       </button>
                     {:else}
+                      {#if group.variants.length === 0}
+                        <button
+                          class="action-btn"
+                          on:click={() => openRestockModal(group.parent)}
+                          title="Restock"
+                          type="button"
+                        >
+                          <PackagePlus size={16} strokeWidth={2} />
+                        </button>
+                      {/if}
                       <button
                         class="action-btn"
                         on:click={() => openModal(group.parent)}
@@ -301,7 +330,7 @@
                 </td>
               </tr>
 
-              <!-- Variant rows (shown when expanded) -->
+              <!-- Variant rows -->
               {#if expanded[group.parent.id]}
                 {#each group.variants as variant}
                   <tr class="variant-row">
@@ -325,6 +354,14 @@
                     </td>
                     <td data-label="Actions">
                       <div class="actions">
+                        <button
+                          class="action-btn"
+                          on:click={() => openRestockModal(variant)}
+                          title="Restock"
+                          type="button"
+                        >
+                          <PackagePlus size={16} strokeWidth={2} />
+                        </button>
                         <button
                           class="action-btn"
                           on:click={() => openModal(variant)}
@@ -409,9 +446,17 @@
                       <div class="variant-actions">
                         <button
                           class="icon-btn"
+                          on:click={() => openRestockModal(variant)}
+                          type="button"
+                          aria-label="Restock"
+                        >
+                          <PackagePlus size={14} />
+                        </button>
+                        <button
+                          class="icon-btn"
                           on:click={() => openModal(variant)}
                           type="button"
-                          aria-label="Edit variant"
+                          aria-label="Edit"
                         >
                           <Pencil size={14} />
                         </button>
@@ -419,7 +464,7 @@
                           class="icon-btn danger"
                           on:click={() => handleDelete(variant.id)}
                           type="button"
-                          aria-label="Delete variant"
+                          aria-label="Delete"
                         >
                           <Trash2 size={14} />
                         </button>
@@ -440,6 +485,15 @@
                   <RotateCcw size={16} strokeWidth={2} /> Restore
                 </button>
               {:else}
+                {#if group.variants.length === 0}
+                  <button
+                    class="action-btn full"
+                    on:click={() => openRestockModal(group.parent)}
+                    type="button"
+                  >
+                    <PackagePlus size={16} strokeWidth={2} /> Restock
+                  </button>
+                {/if}
                 <button class="action-btn full" on:click={() => openModal(group.parent)} type="button">
                   <Pencil size={16} strokeWidth={2} /> Edit
                 </button>
@@ -473,6 +527,15 @@
       product={editingProduct}
       on:save={(e) => handleSave(e.detail)}
       on:close={closeModal}
+      on:restocked={() => fetchProducts()}
+    />
+  {/if}
+
+  {#if showRestockModal && restockingProduct}
+    <RestockModal
+      product={restockingProduct}
+      on:saved={handleRestockSaved}
+      on:close={closeRestockModal}
     />
   {/if}
 </Layout>
@@ -630,7 +693,7 @@
   }
 
   .actions-col {
-    width: 140px;
+    width: 160px;
   }
 
   .status {

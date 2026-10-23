@@ -221,7 +221,6 @@ def test_get_parents_only(owner_client):
     res = owner_client.get("/products/?parents_only=true")
     assert res.status_code == 200
     products = res.json()
-    # Should have parent but no variants
     assert any(p["id"] == parent_id for p in products)
     assert all(p["parent_id"] is None for p in products)
 
@@ -243,7 +242,6 @@ def test_get_variants_of_parent(owner_client):
     variant_ids = {v["id"] for v in variants}
     assert v1.json()["id"] in variant_ids
     assert v2.json()["id"] in variant_ids
-    # VariantSummary has just the essential fields
     assert "selling_price" in variants[0]
     assert "stock_qty" in variants[0]
 
@@ -258,7 +256,6 @@ def test_cannot_create_variant_of_variant(owner_client):
     v1 = _create_product(owner_client, name="V1", parent_id=parent_id)
     v1_id = v1.json()["id"]
 
-    # Try to create a variant of a variant
     res = _create_product(owner_client, name="V1 Sub", parent_id=v1_id)
     assert res.status_code == 400
     assert "nest" in res.json()["detail"].lower() or "top-level" in res.json()["detail"].lower()
@@ -285,14 +282,12 @@ def test_cannot_delete_parent_with_variants(owner_client):
     res = owner_client.delete(f"/products/{parent_id}")
     assert res.status_code == 400
     assert "variant" in res.json()["detail"].lower()
-    
 
 
 # ─── PRICE HISTORY TESTS ──────────────────────────────────────────
 
 
 def test_price_history_seeded_on_create(owner_client):
-    """Creating a product logs initial selling + purchase price history."""
     res = _create_product(
         owner_client,
         name="Sugar",
@@ -304,17 +299,14 @@ def test_price_history_seeded_on_create(owner_client):
     history_res = owner_client.get(f"/products/{product_id}/price-history")
     assert history_res.status_code == 200
     data = history_res.json()
-    # Two entries: one selling, one purchase
     types = {h["price_type"] for h in data["history"]}
     assert types == {"selling", "purchase"}
 
 
 def test_price_history_selling_change(owner_client):
-    """Updating selling price logs a selling entry."""
     res = _create_product(owner_client, name="A", selling_price=1000, purchase_price=700)
     product_id = res.json()["id"]
 
-    # Change selling price
     owner_client.put(f"/products/{product_id}", json={"selling_price": 1500})
 
     history_res = owner_client.get(f"/products/{product_id}/price-history")
@@ -328,11 +320,9 @@ def test_price_history_selling_change(owner_client):
 
 
 def test_price_history_purchase_change(owner_client):
-    """Updating purchase price logs a purchase entry (was previously untracked)."""
     res = _create_product(owner_client, name="B", selling_price=1000, purchase_price=700)
     product_id = res.json()["id"]
 
-    # Change purchase price
     owner_client.put(f"/products/{product_id}", json={"purchase_price": 900})
 
     history_res = owner_client.get(f"/products/{product_id}/price-history")
@@ -345,14 +335,11 @@ def test_price_history_purchase_change(owner_client):
 
 
 def test_price_history_no_change_no_log(owner_client):
-    """Updating with same values logs nothing."""
     res = _create_product(owner_client, name="C", selling_price=1000, purchase_price=700)
     product_id = res.json()["id"]
 
-    # Get count of history
     before = len(owner_client.get(f"/products/{product_id}/price-history").json()["history"])
 
-    # Update with identical value
     owner_client.put(f"/products/{product_id}", json={"selling_price": 1000})
 
     after = len(owner_client.get(f"/products/{product_id}/price-history").json()["history"])
@@ -360,7 +347,6 @@ def test_price_history_no_change_no_log(owner_client):
 
 
 def test_price_history_returns_current_margin(owner_client):
-    """Response includes current selling, purchase, and computed margin."""
     res = _create_product(owner_client, name="D", selling_price=1500, purchase_price=1000)
     product_id = res.json()["id"]
 
@@ -368,16 +354,13 @@ def test_price_history_returns_current_margin(owner_client):
     product = data["product"]
     assert product["current_selling_price"] == 1500
     assert product["current_purchase_price"] == 1000
-    # Margin = (1500 - 1000) / 1500 * 100 = 33.33%
     assert product["current_margin_percent"] == 33.33
 
 
 def test_price_history_shop_scoped(owner_client, app_client):
-    """Another shop cannot see this product's price history."""
     res = _create_product(owner_client, name="E", selling_price=1000, purchase_price=700)
     product_id = res.json()["id"]
 
-    # Register a second shop
     app_client.post(
         "/auth/register",
         json={
@@ -396,4 +379,157 @@ def test_price_history_shop_scoped(owner_client, app_client):
         f"/products/{product_id}/price-history",
         headers={"Authorization": f"Bearer {token_b}"},
     )
-    assert res.status_code == 404  # Not found = not visible
+    assert res.status_code == 404
+
+
+# ─── RESTOCK TESTS ────────────────────────────────────────────────
+
+
+def test_restock_adds_stock_and_batch(owner_client, sample_product):
+    initial_stock = sample_product["stock_qty"]
+
+    res = owner_client.post(
+        f"/products/{sample_product['id']}/restock",
+        json={"quantity": 25, "cost_per_unit": 800, "notes": "Restock from ABC"},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["product"]["stock_qty"] == initial_stock + 25
+    assert data["batch"]["quantity_added"] == 25
+    assert data["batch"]["cost_per_unit"] == 800
+
+
+def test_restock_validates_quantity(owner_client, sample_product):
+    res = owner_client.post(
+        f"/products/{sample_product['id']}/restock",
+        json={"quantity": 0},
+    )
+    assert res.status_code in (400, 422)
+
+
+def test_restock_creates_new_batch(owner_client, sample_product):
+    from app.db.models.stock import StockBatch
+    from app.db.session import SessionLocal
+
+    db = SessionLocal()
+    try:
+        count_before = db.query(StockBatch).filter(
+            StockBatch.product_id == sample_product["id"]
+        ).count()
+    finally:
+        db.close()
+
+    owner_client.post(
+        f"/products/{sample_product['id']}/restock",
+        json={"quantity": 10},
+    )
+
+    db = SessionLocal()
+    try:
+        count_after = db.query(StockBatch).filter(
+            StockBatch.product_id == sample_product["id"]
+        ).count()
+        assert count_after == count_before + 1
+    finally:
+        db.close()
+
+
+def test_restock_history_endpoint(owner_client, sample_product):
+    owner_client.post(
+        f"/products/{sample_product['id']}/restock",
+        json={"quantity": 20, "cost_per_unit": 750},
+    )
+
+    res = owner_client.get(f"/products/{sample_product['id']}/restocks")
+    assert res.status_code == 200
+    data = res.json()
+    assert "product" in data
+    assert "summary" in data
+    assert "batches" in data
+    assert data["summary"]["total_restocks"] >= 1
+    assert data["summary"]["total_quantity_restocked"] >= 50 + 20
+
+
+def test_restock_history_shop_scoped(owner_client, app_client, sample_product):
+    app_client.post(
+        "/auth/register",
+        json={
+            "shop_name": "Shop B",
+            "full_name": "Owner B",
+            "email": "owner-b@test.com",
+            "password": "test1234",
+        },
+    )
+    token_b = app_client.post(
+        "/auth/login",
+        data={"username": "owner-b@test.com", "password": "test1234"},
+    ).json()["access_token"]
+
+    res = app_client.get(
+        f"/products/{sample_product['id']}/restocks",
+        headers={"Authorization": f"Bearer {token_b}"},
+    )
+    assert res.status_code == 404
+
+
+def test_cannot_restock_soft_deleted_product(owner_client):
+    """Restock on a SOFT-deleted product (has sales) returns 400."""
+    res = _create_product(owner_client, name="ToDelete", stock_qty=10)
+    product_id = res.json()["id"]
+
+    # First create a sale so the product gets soft-deleted (not hard-deleted)
+    owner_client.post(
+        "/sales/",
+        json={"items": [{"product_id": product_id, "quantity": 1}]},
+    )
+
+    # Now delete — because it has sales, it becomes soft-deleted
+    owner_client.delete(f"/products/{product_id}")
+
+    restock_res = owner_client.post(
+        f"/products/{product_id}/restock",
+        json={"quantity": 10},
+    )
+    assert restock_res.status_code == 400
+    assert "deleted" in restock_res.json()["detail"].lower()
+
+
+def test_cannot_restock_hard_deleted_product(owner_client):
+    """Restock on a HARD-deleted product (no sales) returns 404."""
+    res = _create_product(owner_client, name="ToDeleteHard", stock_qty=10)
+    product_id = res.json()["id"]
+
+    # Delete — no sales, so it's hard-deleted
+    owner_client.delete(f"/products/{product_id}")
+
+    restock_res = owner_client.post(
+        f"/products/{product_id}/restock",
+        json={"quantity": 10},
+    )
+    assert restock_res.status_code == 404
+
+
+def test_cannot_restock_parent_with_variants(owner_client):
+    """Parent products with variants can't be restocked."""
+    parent_res = _create_product(
+        owner_client, name="Parent", selling_price=0, purchase_price=0, stock_qty=0
+    )
+    parent_id = parent_res.json()["id"]
+    _create_product(owner_client, name="V1", parent_id=parent_id)
+
+    res = owner_client.post(
+        f"/products/{parent_id}/restock",
+        json={"quantity": 10},
+    )
+    assert res.status_code == 400
+    assert "variant" in res.json()["detail"].lower() or "parent" in res.json()["detail"].lower()
+
+
+def test_sell_speed_endpoint(owner_client, sample_product):
+    res = owner_client.get(f"/products/{sample_product['id']}/sell-speed")
+    assert res.status_code == 200
+    data = res.json()
+    assert "product_id" in data
+    assert "batches_analyzed" in data
+    assert data["batches_analyzed"] == 0
+    assert data["avg_days_to_sell"] is None
