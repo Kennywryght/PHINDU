@@ -1,6 +1,19 @@
 <script>
   import { onMount } from "svelte";
-  import { CreditCard, DollarSign, PartyPopper } from "lucide-svelte";
+  import {
+    CreditCard,
+    DollarSign,
+    PartyPopper,
+    ChevronDown,
+    ChevronRight,
+    Shield,
+    ShieldAlert,
+    ShieldCheck,
+    ShieldQuestion,
+    AlertTriangle,
+    CheckCircle2,
+    Info,
+  } from "lucide-svelte";
   import Layout from "../components/Layout.svelte";
   import API from "../api/api";
 
@@ -9,13 +22,14 @@
   let showPaymentModal = false;
   let selectedDebtor = null;
   let paymentAmount = 0;
+  let expandedRisk = {}; // { customer_id: bool }
 
   onMount(fetchDebtors);
 
   async function fetchDebtors() {
     loading = true;
     try {
-      const res = await API.get("/customers/debtors");
+      const res = await API.get("/customers/debtors?include_risk=true");
       debtors = res.data;
     } catch (err) {
       console.error("Failed to fetch debtors", err);
@@ -33,14 +47,30 @@
   async function recordPayment() {
     if (!selectedDebtor || paymentAmount <= 0) return;
     try {
-      await API.post(`/customers/${selectedDebtor.id}/record-payment`, null, {
-        params: { amount: paymentAmount },
+      await API.post(`/customers/${selectedDebtor.id}/record-payment`, {
+        amount: paymentAmount,
+        method: "cash",
       });
       await fetchDebtors();
       showPaymentModal = false;
-    } catch {
-      alert("Payment failed");
+    } catch (err) {
+      alert("Payment failed: " + (err.response?.data?.detail || "Unknown error"));
     }
+  }
+
+  function toggleRisk(customerId) {
+    expandedRisk[customerId] = !expandedRisk[customerId];
+  }
+
+  function riskIcon(level) {
+    if (level === "low") return ShieldCheck;
+    if (level === "medium") return Shield;
+    if (level === "high") return ShieldAlert;
+    return ShieldQuestion;
+  }
+
+  function riskClass(level) {
+    return `risk-${level}`;
   }
 </script>
 
@@ -71,15 +101,43 @@
               <th>Customer</th>
               <th>Phone</th>
               <th>Amount Owed</th>
+              <th>Risk</th>
               <th>Action</th>
             </tr>
           </thead>
           <tbody>
             {#each debtors as debtor}
+              {@const RiskIcon = debtor.risk ? riskIcon(debtor.risk.level) : null}
               <tr>
-                <td><strong>{debtor.name}</strong></td>
+                <td>
+                  <button
+                    class="debtor-name-btn"
+                    on:click={() => debtor.risk && toggleRisk(debtor.id)}
+                    type="button"
+                    disabled={!debtor.risk}
+                  >
+                    {#if debtor.risk}
+                      {#if expandedRisk[debtor.id]}
+                        <ChevronDown size={14} />
+                      {:else}
+                        <ChevronRight size={14} />
+                      {/if}
+                    {/if}
+                    <strong>{debtor.name}</strong>
+                  </button>
+                </td>
                 <td>{debtor.phone || "—"}</td>
                 <td><strong class="amount">MWK {debtor.total_credit?.toLocaleString()}</strong></td>
+                <td>
+                  {#if debtor.risk}
+                    <span class="risk-badge {riskClass(debtor.risk.level)}">
+                      <RiskIcon size={14} strokeWidth={2} />
+                      {debtor.risk.label}
+                    </span>
+                  {:else}
+                    <span class="muted">—</span>
+                  {/if}
+                </td>
                 <td>
                   <button
                     class="btn btn-sm btn-primary"
@@ -90,6 +148,76 @@
                   </button>
                 </td>
               </tr>
+              {#if debtor.risk && expandedRisk[debtor.id]}
+                <tr class="risk-detail-row">
+                  <td colspan="5">
+                    <div class="risk-detail">
+                      <div class="risk-header">
+                        <span class="risk-score">
+                          Score: <strong>{debtor.risk.score}/100</strong>
+                        </span>
+                        <span class="risk-recommendation">
+                          <Info size={14} /> {debtor.risk.recommendation}
+                        </span>
+                      </div>
+                      {#if debtor.risk.warnings.length > 0}
+                        <div class="risk-section">
+                          <strong class="section-label">
+                            <AlertTriangle size={12} /> Risk factors
+                          </strong>
+                          <ul class="risk-list">
+                            {#each debtor.risk.warnings as warning}
+                              <li class="warning-item">{warning}</li>
+                            {/each}
+                          </ul>
+                        </div>
+                      {/if}
+                      {#if debtor.risk.positives.length > 0}
+                        <div class="risk-section">
+                          <strong class="section-label">
+                            <CheckCircle2 size={12} /> Positive signals
+                          </strong>
+                          <ul class="risk-list">
+                            {#each debtor.risk.positives as positive}
+                              <li class="positive-item">{positive}</li>
+                            {/each}
+                          </ul>
+                        </div>
+                      {/if}
+                      <div class="risk-factors-grid">
+                        <div class="factor">
+                          <span>Payments made</span>
+                          <strong>{debtor.risk.factors.payment_count}</strong>
+                        </div>
+                        <div class="factor">
+                          <span>Total sold</span>
+                          <strong>MWK {debtor.risk.factors.total_sold?.toLocaleString()}</strong>
+                        </div>
+                        <div class="factor">
+                          <span>Avg purchase</span>
+                          <strong>MWK {debtor.risk.factors.avg_purchase?.toLocaleString()}</strong>
+                        </div>
+                        <div class="factor">
+                          <span>Credit ratio</span>
+                          <strong>{Math.round(debtor.risk.factors.credit_ratio * 100)}%</strong>
+                        </div>
+                        {#if debtor.risk.factors.avg_days_to_pay != null}
+                          <div class="factor">
+                            <span>Avg days to pay</span>
+                            <strong>{debtor.risk.factors.avg_days_to_pay}</strong>
+                          </div>
+                        {/if}
+                        {#if debtor.risk.factors.account_age_days != null}
+                          <div class="factor">
+                            <span>Account age</span>
+                            <strong>{debtor.risk.factors.account_age_days}d</strong>
+                          </div>
+                        {/if}
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              {/if}
             {/each}
           </tbody>
         </table>
@@ -98,12 +226,62 @@
       <!-- Mobile cards -->
       <div class="mobile-debtors">
         {#each debtors as debtor}
+          {@const RiskIcon = debtor.risk ? riskIcon(debtor.risk.level) : null}
           <div class="debtor-card">
             <div class="debtor-header">
-              <h3>{debtor.name}</h3>
+              <div class="debtor-name-block">
+                <h3>{debtor.name}</h3>
+                {#if debtor.risk}
+                  <span class="risk-badge {riskClass(debtor.risk.level)}">
+                    <RiskIcon size={12} strokeWidth={2} />
+                    {debtor.risk.label}
+                  </span>
+                {/if}
+              </div>
               <span class="amount">MWK {debtor.total_credit?.toLocaleString()}</span>
             </div>
             <p class="phone-line">{debtor.phone || "No phone"}</p>
+
+            {#if debtor.risk}
+              <button
+                class="risk-toggle-btn"
+                on:click={() => toggleRisk(debtor.id)}
+                type="button"
+              >
+                {#if expandedRisk[debtor.id]}
+                  Hide risk details
+                {:else}
+                  View risk details ({debtor.risk.score}/100)
+                {/if}
+              </button>
+
+              {#if expandedRisk[debtor.id]}
+                <div class="risk-detail mobile-risk-detail">
+                  <div class="risk-recommendation">
+                    <Info size={14} /> {debtor.risk.recommendation}
+                  </div>
+                  {#if debtor.risk.warnings.length > 0}
+                    <ul class="risk-list">
+                      {#each debtor.risk.warnings as warning}
+                        <li class="warning-item">
+                          <AlertTriangle size={12} /> {warning}
+                        </li>
+                      {/each}
+                    </ul>
+                  {/if}
+                  {#if debtor.risk.positives.length > 0}
+                    <ul class="risk-list">
+                      {#each debtor.risk.positives as positive}
+                        <li class="positive-item">
+                          <CheckCircle2 size={12} /> {positive}
+                        </li>
+                      {/each}
+                    </ul>
+                  {/if}
+                </div>
+              {/if}
+            {/if}
+
             <button
               class="btn btn-primary btn-block"
               on:click={() => openPaymentModal(debtor)}
@@ -162,7 +340,7 @@
 
 <style>
   .credit-page {
-    max-width: 900px;
+    max-width: 1000px;
     margin: 0 auto;
   }
   .page-header {
@@ -231,11 +409,176 @@
     padding: 0.7rem 0.75rem;
     border-top: 1px solid var(--border, #e5e7eb);
     color: var(--text, #111827);
+    vertical-align: middle;
+  }
+  .debtor-name-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    color: var(--text, #111827);
+    font-size: 0.9rem;
+    text-align: left;
+  }
+  .debtor-name-btn:disabled {
+    cursor: default;
+  }
+  .debtor-name-btn:hover:not(:disabled) {
+    color: var(--primary, #0f6b3e);
   }
   .amount {
     color: var(--danger, #dc2626);
     font-weight: 700;
   }
+  .muted {
+    color: var(--text-light, #6b7280);
+  }
+
+  /* ── Risk badges ── */
+  .risk-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 0.2rem 0.55rem;
+    border-radius: 20px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+  .risk-low {
+    background: #dcfce7;
+    color: #166534;
+  }
+  .risk-medium {
+    background: #fef3c7;
+    color: #92400e;
+  }
+  .risk-high {
+    background: #fee2e2;
+    color: #991b1b;
+  }
+  .risk-new {
+    background: var(--background, #f9fafb);
+    color: var(--text-light, #6b7280);
+  }
+
+  /* ── Risk detail row ── */
+  .risk-detail-row td {
+    background: var(--background, #f9fafb);
+    padding: 1rem;
+  }
+  .risk-detail {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  .risk-header {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+    align-items: center;
+  }
+  .risk-score {
+    font-size: 0.88rem;
+    color: var(--text, #111827);
+  }
+  .risk-recommendation {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.85rem;
+    color: var(--primary, #0f6b3e);
+    font-weight: 500;
+    background: #f0fdf4;
+    padding: 0.35rem 0.65rem;
+    border-radius: 8px;
+  }
+  .risk-section {
+    font-size: 0.85rem;
+  }
+  .section-label {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    margin-bottom: 0.35rem;
+    color: var(--text-light, #6b7280);
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+  .risk-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+  .warning-item,
+  .positive-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.35rem;
+    font-size: 0.83rem;
+    padding-left: 0.25rem;
+  }
+  .warning-item {
+    color: #9a3412;
+  }
+  .positive-item {
+    color: #166534;
+  }
+  .risk-factors-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 0.5rem;
+    padding-top: 0.5rem;
+    border-top: 1px dashed var(--border, #e5e7eb);
+  }
+  .factor {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+  }
+  .factor span {
+    font-size: 0.72rem;
+    color: var(--text-light, #6b7280);
+  }
+  .factor strong {
+    font-size: 0.88rem;
+    color: var(--text, #111827);
+  }
+
+  /* ── Mobile risk UI ── */
+  .debtor-name-block {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+  .risk-toggle-btn {
+    width: 100%;
+    padding: 0.45rem;
+    background: var(--background, #f9fafb);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.78rem;
+    color: var(--text, #111827);
+    font-weight: 500;
+    margin: 0.4rem 0;
+  }
+  .mobile-risk-detail {
+    padding: 0.75rem;
+    background: var(--background, #f9fafb);
+    border-radius: 8px;
+    margin-bottom: 0.75rem;
+  }
+
+  /* ── Buttons / modal / other ── */
   .mobile-debtors {
     display: none;
     flex-direction: column;
@@ -250,7 +593,7 @@
   .debtor-header {
     display: flex;
     justify-content: space-between;
-    align-items: center;
+    align-items: flex-start;
     gap: 0.5rem;
     margin-bottom: 0.35rem;
   }

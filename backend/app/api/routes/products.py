@@ -1,6 +1,6 @@
 """Product API routes."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -12,7 +12,7 @@ from app.api.dependencies import get_current_shop_id
 from app.api.deps import require_role
 from app.db.models.price_history import PriceHistory
 from app.db.models.product import Product
-from app.db.models.sale import SaleItem
+from app.db.models.sale import Sale, SaleItem
 from app.db.models.stock import StockBatch
 from app.db.session import SessionLocal
 from app.schemas.product import (
@@ -643,3 +643,154 @@ def unarchive_product(
     product.archived = False
     db.commit()
     return {"message": "Product unarchived"}
+
+
+# ── Restock Prediction ────────────────────────────────────────────
+@router.get("/{product_id}/restock-prediction")
+def get_restock_prediction(
+    product_id: str,
+    db: Session = Depends(get_db),
+    shop_id: str = Depends(get_current_shop_id),
+):
+    """
+    Predict when this product needs restocking.
+
+    Two methods:
+      1. "batch_life" — if 2+ finished batches exist, use avg batch duration
+      2. "sales_velocity" — fallback: current_stock / avg_daily_sales
+      3. "no_data" — not enough history
+    """
+    product = (
+        db.query(Product)
+        .filter(Product.id == product_id, Product.shop_id == shop_id)
+        .first()
+    )
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    now = datetime.utcnow()
+    current_stock = product.stock_qty or 0
+
+    # Get finished batches (ordered newest first)
+    finished_batches = (
+        db.query(StockBatch)
+        .filter(
+            StockBatch.product_id == product_id,
+            StockBatch.shop_id == shop_id,
+            StockBatch.date_finished.isnot(None),
+        )
+        .order_by(StockBatch.date_finished.desc())
+        .all()
+    )
+
+    # Get most recent batch (finished or not) for last_restock_date
+    latest_batch = (
+        db.query(StockBatch)
+        .filter(
+            StockBatch.product_id == product_id,
+            StockBatch.shop_id == shop_id,
+        )
+        .order_by(StockBatch.date_added.desc())
+        .first()
+    )
+
+    last_restock_date = latest_batch.date_added if latest_batch else None
+
+    # ── Method 1: batch life ──
+    if len(finished_batches) >= 2:
+        total_days = 0
+        valid_count = 0
+        for b in finished_batches:
+            if b.date_added and b.date_finished:
+                days = (b.date_finished - b.date_added).days
+                if days >= 0:
+                    total_days += days
+                    valid_count += 1
+
+        if valid_count >= 2:
+            avg_batch_life_days = round(total_days / valid_count, 1)
+            predicted_next = (
+                last_restock_date + timedelta(days=avg_batch_life_days)
+                if last_restock_date
+                else None
+            )
+            days_until = (
+                (predicted_next - now).days if predicted_next else None
+            )
+
+            return {
+                "product_id": product.id,
+                "name": product.name,
+                "unit": product.unit or "unit",
+                "current_stock": current_stock,
+                "avg_batch_life_days": avg_batch_life_days,
+                "last_restock_date": (
+                    last_restock_date.isoformat() if last_restock_date else None
+                ),
+                "predicted_next_restock": (
+                    predicted_next.isoformat() if predicted_next else None
+                ),
+                "days_until_restock": days_until,
+                "confidence": "high" if valid_count >= 3 else "medium",
+                "batches_analyzed": valid_count,
+                "method": "batch_life",
+            }
+
+    # ── Method 2: sales velocity ──
+    cutoff = now - timedelta(days=30)
+    sold_total = (
+        db.query(func.sum(SaleItem.quantity))
+        .join(Sale, Sale.id == SaleItem.sale_id)
+        .filter(
+            SaleItem.product_id == product_id,
+            Sale.shop_id == shop_id,
+            Sale.is_voided == False,
+            Sale.created_at >= cutoff,
+        )
+        .scalar()
+        or 0
+    )
+
+    if sold_total > 0:
+        avg_daily = float(sold_total) / 30.0
+        days_until = (
+            round(current_stock / avg_daily, 1) if avg_daily > 0 else None
+        )
+        predicted_next = (
+            now + timedelta(days=days_until) if days_until is not None else None
+        )
+
+        return {
+            "product_id": product.id,
+            "name": product.name,
+            "unit": product.unit or "unit",
+            "current_stock": current_stock,
+            "avg_batch_life_days": None,
+            "last_restock_date": (
+                last_restock_date.isoformat() if last_restock_date else None
+            ),
+            "predicted_next_restock": (
+                predicted_next.isoformat() if predicted_next else None
+            ),
+            "days_until_restock": days_until,
+            "confidence": "low",
+            "batches_analyzed": len(finished_batches),
+            "method": "sales_velocity",
+        }
+
+    # ── Method 3: no data ──
+    return {
+        "product_id": product.id,
+        "name": product.name,
+        "unit": product.unit or "unit",
+        "current_stock": current_stock,
+        "avg_batch_life_days": None,
+        "last_restock_date": (
+            last_restock_date.isoformat() if last_restock_date else None
+        ),
+        "predicted_next_restock": None,
+        "days_until_restock": None,
+        "confidence": "low",
+        "batches_analyzed": len(finished_batches),
+        "method": "no_data",
+    }

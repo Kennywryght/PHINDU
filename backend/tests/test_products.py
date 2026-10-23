@@ -16,6 +16,16 @@ def _create_product(client, **overrides):
     return client.post("/products/", json=payload)
 
 
+def _make_sale(client, product_id, quantity):
+    """Helper to record a sale containing the given product (cash, fully paid)."""
+    res = client.post(
+        "/sales/",
+        json={"items": [{"product_id": product_id, "quantity": quantity}]},
+    )
+    assert res.status_code in (200, 201), f"Sale creation failed: {res.text}"
+    return res.json()
+
+
 def test_create_product(owner_client):
     res = owner_client.post(
         "/products/",
@@ -477,13 +487,11 @@ def test_cannot_restock_soft_deleted_product(owner_client):
     res = _create_product(owner_client, name="ToDelete", stock_qty=10)
     product_id = res.json()["id"]
 
-    # First create a sale so the product gets soft-deleted (not hard-deleted)
     owner_client.post(
         "/sales/",
         json={"items": [{"product_id": product_id, "quantity": 1}]},
     )
 
-    # Now delete — because it has sales, it becomes soft-deleted
     owner_client.delete(f"/products/{product_id}")
 
     restock_res = owner_client.post(
@@ -499,7 +507,6 @@ def test_cannot_restock_hard_deleted_product(owner_client):
     res = _create_product(owner_client, name="ToDeleteHard", stock_qty=10)
     product_id = res.json()["id"]
 
-    # Delete — no sales, so it's hard-deleted
     owner_client.delete(f"/products/{product_id}")
 
     restock_res = owner_client.post(
@@ -533,3 +540,75 @@ def test_sell_speed_endpoint(owner_client, sample_product):
     assert "batches_analyzed" in data
     assert data["batches_analyzed"] == 0
     assert data["avg_days_to_sell"] is None
+
+
+# ─── RESTOCK PREDICTION TESTS ─────────────────────────────────────
+
+
+def test_restock_prediction_no_data(owner_client):
+    """New product with no sales → method 'no_data'."""
+    res = _create_product(owner_client, name="New Item", stock_qty=10)
+    product_id = res.json()["id"]
+
+    pred = owner_client.get(f"/products/{product_id}/restock-prediction")
+    assert pred.status_code == 200
+    data = pred.json()
+    assert data["method"] == "no_data"
+    assert data["days_until_restock"] is None
+
+
+def test_restock_prediction_sales_velocity(owner_client):
+    """Product with 1 batch, sells steadily → method 'sales_velocity'."""
+    res = _create_product(owner_client, name="Steady", stock_qty=30)
+    product_id = res.json()["id"]
+
+    # Sell 10 units → avg 0.33/day, stock 20 → ~60 days
+    _make_sale(owner_client, product_id, 10)
+
+    pred = owner_client.get(f"/products/{product_id}/restock-prediction")
+    data = pred.json()
+    assert data["method"] == "sales_velocity"
+    assert data["days_until_restock"] is not None
+
+
+def test_restock_prediction_shop_scoped(owner_client, app_client):
+    """Shop B cannot see Shop A's product prediction."""
+    res = _create_product(owner_client, name="Secret", stock_qty=10)
+    product_id = res.json()["id"]
+
+    app_client.post(
+        "/auth/register",
+        json={
+            "shop_name": "Shop B",
+            "full_name": "Owner B",
+            "email": "owner-b-pred@test.com",
+            "password": "test1234",
+        },
+    )
+    token_b = app_client.post(
+        "/auth/login",
+        data={"username": "owner-b-pred@test.com", "password": "test1234"},
+    ).json()["access_token"]
+
+    res = app_client.get(
+        f"/products/{product_id}/restock-prediction",
+        headers={"Authorization": f"Bearer {token_b}"},
+    )
+    assert res.status_code == 404
+
+
+def test_restock_prediction_returns_structure(owner_client):
+    """Prediction response has all expected fields."""
+    res = _create_product(owner_client, name="Structure Check", stock_qty=10)
+    sample_product = res.json()
+
+    pred = owner_client.get(f"/products/{sample_product['id']}/restock-prediction")
+    assert pred.status_code == 200
+    data = pred.json()
+
+    assert "product_id" in data
+    assert "name" in data
+    assert "current_stock" in data
+    assert "days_until_restock" in data
+    assert "confidence" in data
+    assert "method" in data

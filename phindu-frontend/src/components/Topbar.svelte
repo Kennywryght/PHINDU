@@ -1,7 +1,7 @@
 <script>
   import { createEventDispatcher, onMount } from "svelte";
   import { locale } from "svelte-i18n";
-  import { Menu, Moon, Sun, Globe, Circle } from "lucide-svelte";
+  import { Menu, Moon, Sun, Globe, Circle, UserCircle } from "lucide-svelte";
   import API from "../api/api";
 
   export let title = "";
@@ -63,6 +63,17 @@
     locale.set(currentLocale);
     localStorage.setItem("locale", currentLocale);
   }
+
+  function openProfile() {
+    // If you have a client-side router hook, prefer it:
+    if (window.navigate) {
+      window.navigate("/profile");
+    } else {
+      window.location.href = "/profile";
+    }
+    // Also emit for parent components that listen
+    dispatch("profile");
+  }
 </script>
 
 <header class="topbar">
@@ -77,7 +88,9 @@
     </button>
 
     <div class="brand">
-      <img src="/logo-192.png" alt="PHINDU" class="logo-img" />
+      <span class="logo-badge">
+        <img src="/logo-192.png" alt="PHINDU" class="logo-img" />
+      </span>
       <span class="logo-text">PHINDU</span>
     </div>
   </div>
@@ -130,6 +143,16 @@
     >
       <Globe size={20} strokeWidth={1.75} />
       <span class="lang-tag">{currentLocale.toUpperCase()}</span>
+    </button>
+
+    <button
+      on:click={openProfile}
+      title="Profile"
+      class="icon-btn profile-btn"
+      aria-label="Open profile"
+      type="button"
+    >
+      <UserCircle size={22} strokeWidth={1.75} />
     </button>
   </div>
 </header>
@@ -201,13 +224,32 @@
   .brand {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.55rem;
+    flex-shrink: 0;
+  }
+
+  /* ─── Circular logo ─── */
+  .logo-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    aspect-ratio: 1 / 1;
+    border-radius: 50%;
+    overflow: hidden;
+    background: #ffffff;
+    border: 1px solid var(--border, #e5e7eb);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
     flex-shrink: 0;
   }
 
   .logo-img {
-    height: 40px;
-    width: auto;
+    width: 100%;
+    height: 100%;
+    object-fit: cover; /* fills circle; use 'contain' if logo has transparent padding */
+    display: block;
+    border-radius: 50%;
   }
 
   .logo-text {
@@ -293,6 +335,10 @@
 
   .icon-btn:hover {
     background: var(--background, #f9fafb);
+  }
+
+  .profile-btn {
+    border-radius: 50%;
   }
 
   .lang-tag {
@@ -403,7 +449,8 @@
       display: inline-flex;
     }
 
-    .logo-img {
+    .logo-badge {
+      width: 32px;
       height: 32px;
     }
 

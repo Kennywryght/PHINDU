@@ -11,6 +11,7 @@
     ChevronRight,
     Layers,
     PackagePlus,
+    Clock,
   } from "lucide-svelte";
   import Layout from "../components/Layout.svelte";
   import ProductModal from "../components/ProductModal.svelte";
@@ -20,12 +21,12 @@
   let products = [];
   let grouped = [];
   let expanded = {};
+  let predictions = {}; // { product_id: prediction_data }
   let loading = true;
   let showModal = false;
   let editingProduct = null;
   let filter = "all";
 
-  // Restock modal
   let showRestockModal = false;
   let restockingProduct = null;
 
@@ -53,11 +54,38 @@
 
       products = filtered;
       buildGroups();
+
+      // Fetch predictions in parallel (fire and forget, don't block render)
+      fetchPredictions();
     } catch (err) {
       console.error("Failed to fetch products", err);
     } finally {
       loading = false;
     }
+  }
+
+  async function fetchPredictions() {
+    // Only fetch for sellable products (not parents, not deleted)
+    const sellable = products.filter(
+      (p) => !p.is_deleted && !p.archived && (p.parent_id || !isParentOfVariants(p.id))
+    );
+
+    const results = {};
+    await Promise.all(
+      sellable.map(async (p) => {
+        try {
+          const res = await API.get(`/products/${p.id}/restock-prediction`);
+          results[p.id] = res.data;
+        } catch {
+          // Ignore individual failures
+        }
+      })
+    );
+    predictions = results;
+  }
+
+  function isParentOfVariants(productId) {
+    return products.some((p) => p.parent_id === productId);
   }
 
   function buildGroups() {
@@ -162,6 +190,24 @@
     closeRestockModal();
     fetchProducts();
   }
+
+  function predictionClass(pred) {
+    if (!pred || pred.days_until_restock === null) return "";
+    const d = pred.days_until_restock;
+    if (d <= 3) return "pred-critical";
+    if (d <= 7) return "pred-soon";
+    return "pred-ok";
+  }
+
+  function predictionText(pred) {
+    if (!pred) return null;
+    if (pred.method === "no_data") return "No prediction yet";
+    if (pred.days_until_restock === null) return "—";
+    const d = pred.days_until_restock;
+    if (d < 0) return `Overdue ${Math.abs(d)}d`;
+    if (d === 0) return "Restock today";
+    return `~${d}d left`;
+  }
 </script>
 
 <Layout title="Products">
@@ -217,7 +263,7 @@
           </thead>
           <tbody>
             {#each grouped as group}
-              <!-- Parent row -->
+              {@const pred = predictions[group.parent.id]}
               <tr class:parent-row={group.variants.length > 0}>
                 <td data-label="Name">
                   <div class="name-cell">
@@ -256,7 +302,15 @@
                   {#if group.variants.length > 0}
                     <span class="muted">—</span>
                   {:else}
-                    {group.parent.stock_qty}
+                    <div class="stock-cell">
+                      <span>{group.parent.stock_qty}</span>
+                      {#if pred && pred.method !== "no_data"}
+                        <span class="prediction-tag {predictionClass(pred)}">
+                          <Clock size={10} strokeWidth={2} />
+                          {predictionText(pred)}
+                        </span>
+                      {/if}
+                    </div>
                   {/if}
                 </td>
                 <td data-label="Status">
@@ -330,9 +384,9 @@
                 </td>
               </tr>
 
-              <!-- Variant rows -->
               {#if expanded[group.parent.id]}
                 {#each group.variants as variant}
+                  {@const vpred = predictions[variant.id]}
                   <tr class="variant-row">
                     <td data-label="Name">
                       <div class="name-cell variant-name">
@@ -342,7 +396,17 @@
                     </td>
                     <td data-label="Category">{variant.category || "—"}</td>
                     <td data-label="Price">MWK {variant.selling_price?.toLocaleString()}</td>
-                    <td data-label="Stock">{variant.stock_qty}</td>
+                    <td data-label="Stock">
+                      <div class="stock-cell">
+                        <span>{variant.stock_qty}</span>
+                        {#if vpred && vpred.method !== "no_data"}
+                          <span class="prediction-tag {predictionClass(vpred)}">
+                            <Clock size={10} strokeWidth={2} />
+                            {predictionText(vpred)}
+                          </span>
+                        {/if}
+                      </div>
+                    </td>
                     <td data-label="Status">
                       <span
                         class="status"
@@ -391,6 +455,7 @@
       <!-- Mobile Cards -->
       <div class="mobile-cards">
         {#each grouped as group}
+          {@const pred = predictions[group.parent.id]}
           <div class="product-card">
             <div class="card-header">
               <div class="name-cell">
@@ -416,7 +481,18 @@
                 <div>
                   <span>Price</span><strong>MWK {group.parent.selling_price?.toLocaleString()}</strong>
                 </div>
-                <div><span>Stock</span><strong>{group.parent.stock_qty}</strong></div>
+                <div>
+                  <span>Stock</span>
+                  <strong>
+                    {group.parent.stock_qty}
+                    {#if pred && pred.method !== "no_data"}
+                      <span class="prediction-tag {predictionClass(pred)}">
+                        <Clock size={10} strokeWidth={2} />
+                        {predictionText(pred)}
+                      </span>
+                    {/if}
+                  </strong>
+                </div>
               {/if}
             </div>
 
@@ -436,11 +512,15 @@
               {#if expanded[group.parent.id]}
                 <div class="variant-list">
                   {#each group.variants as variant}
+                    {@const vpred = predictions[variant.id]}
                     <div class="variant-item">
                       <div>
                         <div class="variant-name">{variant.name}</div>
                         <div class="variant-meta">
                           MWK {variant.selling_price?.toLocaleString()} · Stock {variant.stock_qty}
+                          {#if vpred && vpred.method !== "no_data"}
+                            · <span class="{predictionClass(vpred)}">{predictionText(vpred)}</span>
+                          {/if}
                         </div>
                       </div>
                       <div class="variant-actions">
@@ -692,6 +772,38 @@
     font-size: 0.85rem;
   }
 
+  .stock-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+
+  .prediction-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 0.1rem 0.4rem;
+    border-radius: 20px;
+    white-space: nowrap;
+  }
+
+  .pred-critical {
+    background: #fee2e2;
+    color: #991b1b;
+  }
+
+  .pred-soon {
+    background: #fef3c7;
+    color: #92400e;
+  }
+
+  .pred-ok {
+    background: #dcfce7;
+    color: #166534;
+  }
+
   .actions-col {
     width: 160px;
   }
@@ -891,16 +1003,13 @@
       flex-direction: column;
       align-items: stretch;
     }
-
     .add-btn {
       justify-content: center;
       padding: 0.65rem;
     }
-
     .table-wrapper {
       display: none;
     }
-
     .mobile-cards {
       display: flex;
     }

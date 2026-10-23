@@ -1,10 +1,11 @@
-"""Customer API routes (includes credit/debt management + payment audit)."""
+"""Customer API routes (credit/debt + payment audit + risk scoring)."""
 
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_shop_id
@@ -61,6 +62,171 @@ class PaymentOut(BaseModel):
         from_attributes = True
 
 
+# ─── Credit Risk Scoring (pure logic) ────────────────────────────
+def _compute_credit_risk(db: Session, customer: Customer, shop_id: str) -> dict:
+    """
+    Compute a 0-100 credit risk score for a customer.
+
+    Higher = safer to extend credit.
+
+    A brand-new customer with no history and no outstanding balance
+    scores a perfect 100. Deductions only apply when there is actual
+    credit exposure or negative history.
+    """
+    now = datetime.utcnow()
+    score = 100
+    warnings = []
+    positives = []
+
+    # ── Gather data ──
+    payments = (
+        db.query(Payment)
+        .filter(Payment.customer_id == customer.id, Payment.shop_id == shop_id)
+        .all()
+    )
+
+    sales = (
+        db.query(Sale)
+        .filter(
+            Sale.customer_id == customer.id,
+            Sale.shop_id == shop_id,
+            Sale.is_voided == False,
+        )
+        .all()
+    )
+
+    payment_count = len(payments)
+    sale_count = len(sales)
+    total_paid = sum(p.amount or 0 for p in payments)
+    total_sold = sum(s.total_amount or 0 for s in sales)
+    credit_sales_amount = sum(
+        s.total_amount or 0 for s in sales
+        if s.payment_status in ("unpaid", "partial")
+    )
+    current_balance = customer.total_credit or 0
+
+    account_age_days = None
+    if customer.created_at:
+        account_age_days = (now - customer.created_at).days
+
+    avg_purchase = (total_sold / sale_count) if sale_count > 0 else 0
+
+    avg_days_to_pay = None
+    if payment_count > 0 and credit_sales_amount > 0:
+        credit_sales = [
+            s for s in sales
+            if s.payment_status in ("unpaid", "partial") or s.amount_paid
+        ]
+        if credit_sales:
+            first_credit_sale = min(s.created_at for s in credit_sales)
+            last_payment = max(p.created_at for p in payments)
+            if first_credit_sale and last_payment and last_payment >= first_credit_sale:
+                avg_days_to_pay = (last_payment - first_credit_sale).days
+
+    credit_ratio = (credit_sales_amount / total_sold) if total_sold > 0 else 0
+
+    # ── Apply scoring rules ──
+
+    # 1. Owes money but has never paid anything
+    if current_balance > 0 and payment_count == 0:
+        score -= 40
+        warnings.append("Never made a payment on record")
+
+    # 2. Days to pay (only when there is payment history)
+    if avg_days_to_pay is not None:
+        if avg_days_to_pay > 45:
+            score -= 25
+            warnings.append(f"Very slow payer ({avg_days_to_pay} days average)")
+        elif avg_days_to_pay > 30:
+            score -= 15
+            warnings.append(f"Slow payer ({avg_days_to_pay} days average)")
+        elif avg_days_to_pay > 14:
+            score -= 8
+            warnings.append(f"Moderate payer ({avg_days_to_pay} days average)")
+        elif avg_days_to_pay <= 10 and payment_count >= 2:
+            score += 5
+            positives.append(f"Fast payer ({avg_days_to_pay} days average)")
+
+    # 3. Current balance vs typical purchase (only when balance > 0)
+    if avg_purchase > 0 and current_balance > 0:
+        ratio = current_balance / avg_purchase
+        if ratio > 4:
+            score -= 25
+            warnings.append(f"Balance is {ratio:.1f}× typical purchase")
+        elif ratio > 2:
+            score -= 15
+            warnings.append(f"Balance is {ratio:.1f}× typical purchase")
+        elif ratio > 1:
+            score -= 8
+
+    # 4. Credit usage ratio (only when there are sales)
+    if credit_ratio >= 0.5:
+        score -= 20
+        warnings.append(f"{int(credit_ratio * 100)}% of sales were on credit")
+    elif credit_ratio >= 0.3:
+        score -= 10
+
+    # 5. Account age — only penalise young accounts that ALREADY carry debt.
+    #    A brand-new customer with zero balance should not lose points.
+    if (
+        account_age_days is not None
+        and account_age_days < 30
+        and current_balance > 0
+    ):
+        score -= 10
+        warnings.append(f"New account ({account_age_days} days old)")
+
+    # 6. Payment track record
+    if payment_count >= 5:
+        score += 5
+        positives.append(f"{payment_count} successful payments")
+    elif payment_count >= 1 and payment_count < 5:
+        positives.append(f"{payment_count} payment(s) on record")
+
+    score = max(0, min(100, score))
+
+    # ── Classification ──
+    has_history = sale_count > 0 or payment_count > 0
+
+    if not has_history:
+        level = "new"
+        label = "New Customer"
+        recommendation = "No purchase history yet — start with a small credit limit"
+    elif score >= 70:
+        level = "low"
+        label = "Low Risk"
+        recommendation = "Safe to extend credit"
+    elif score >= 40:
+        level = "medium"
+        label = "Medium Risk"
+        recommendation = "Extend credit with caution — monitor closely"
+    else:
+        level = "high"
+        label = "High Risk"
+        recommendation = "Consider declining new credit or requiring prepayment"
+
+    return {
+        "score": score,
+        "level": level,
+        "label": label,
+        "recommendation": recommendation,
+        "factors": {
+            "payment_count": payment_count,
+            "sale_count": sale_count,
+            "total_paid": round(total_paid, 2),
+            "total_sold": round(total_sold, 2),
+            "credit_sales_amount": round(credit_sales_amount, 2),
+            "credit_ratio": round(credit_ratio, 2),
+            "current_balance": round(current_balance, 2),
+            "avg_purchase": round(avg_purchase, 2),
+            "avg_days_to_pay": avg_days_to_pay,
+            "account_age_days": account_age_days,
+        },
+        "warnings": warnings,
+        "positives": positives,
+    }
+
+
 # ─── Endpoints ───────────────────────────────────────────────────
 @router.post("/", response_model=CustomerOut)
 def create_customer(
@@ -85,6 +251,7 @@ def get_customers(
 
 @router.get("/debtors")
 def get_debtors(
+    include_risk: bool = Query(False, description="Include credit risk scores"),
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
@@ -92,15 +259,52 @@ def get_debtors(
     debtors = (
         db.query(Customer).filter(Customer.total_credit > 0, Customer.shop_id == shop_id).all()
     )
-    return [
-        {
+
+    result = []
+    for c in debtors:
+        item = {
             "id": c.id,
             "name": c.name,
             "phone": c.phone,
             "total_credit": c.total_credit,
         }
-        for c in debtors
-    ]
+        if include_risk:
+            item["risk"] = _compute_credit_risk(db, c, shop_id)
+        result.append(item)
+
+    if include_risk:
+        level_priority = {"high": 0, "medium": 1, "new": 2, "low": 3}
+        result.sort(
+            key=lambda x: (
+                level_priority.get(x["risk"]["level"], 4),
+                -x["total_credit"],
+            )
+        )
+    else:
+        result.sort(key=lambda x: x["total_credit"], reverse=True)
+
+    return result
+
+
+@router.get("/{customer_id}/credit-risk")
+def get_customer_credit_risk(
+    customer_id: str,
+    db: Session = Depends(get_db),
+    shop_id: str = Depends(get_current_shop_id),
+):
+    """Compute and return the credit risk score for a specific customer."""
+    customer = (
+        db.query(Customer).filter(Customer.id == customer_id, Customer.shop_id == shop_id).first()
+    )
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    risk = _compute_credit_risk(db, customer, shop_id)
+    return {
+        "customer_id": customer.id,
+        "name": customer.name,
+        **risk,
+    }
 
 
 @router.post(
@@ -114,15 +318,7 @@ def record_payment(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """Record a credit payment from a customer.
-
-    Creates a full audit-trail Payment record and updates:
-      - customer.total_credit (reduced by amount)
-      - active session's cash_sales (if method='cash')
-      - sale.amount_paid / payment_status (if sale_id provided)
-
-    Requires manager or owner.
-    """
+    """Record a credit payment from a customer."""
     customer = (
         db.query(Customer).filter(Customer.id == customer_id, Customer.shop_id == shop_id).first()
     )
@@ -132,7 +328,6 @@ def record_payment(
     if payload.amount <= 0:
         raise HTTPException(status_code=400, detail="Amount must be positive")
 
-    # ── Optional: specific sale being paid off ──
     sale = None
     if payload.sale_id:
         sale = db.query(Sale).filter(Sale.id == payload.sale_id, Sale.shop_id == shop_id).first()
@@ -149,14 +344,12 @@ def record_payment(
                 detail="Cannot record payment against a voided sale",
             )
 
-    # ── Link to active session ──
     active_session = (
         db.query(SessionModel)
         .filter(SessionModel.is_active == True, SessionModel.shop_id == shop_id)
         .first()
     )
 
-    # ── Create Payment record (audit trail) ──
     payment = Payment(
         id=str(uuid.uuid4()),
         shop_id=shop_id,
@@ -169,10 +362,8 @@ def record_payment(
     )
     db.add(payment)
 
-    # ── Reduce customer credit ──
     customer.total_credit = max(0, (customer.total_credit or 0) - payload.amount)
 
-    # ── If tied to a specific sale, update that sale's amount_paid ──
     if sale:
         new_amount_paid = min(
             sale.total_amount or 0,
@@ -183,13 +374,6 @@ def record_payment(
             sale.payment_status = "paid"
         elif new_amount_paid > 0:
             sale.payment_status = "partial"
-
-    # ── If cash, increase active session cash_sales ──
-    if active_session and (payload.method or "cash").lower() == "cash":
-        # We don't reuse `cash_sales` (that's for sale revenue);
-        # we track cash received via payments in session tracking below
-        # by re-computing from Payment rows. But for quick drawer math:
-        pass  # see note in summary endpoint
 
     db.commit()
     db.refresh(payment)

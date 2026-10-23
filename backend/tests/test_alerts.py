@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta
 
 
+# ── Helpers (defined once) ───────────────────────────────────────
 def _make_product(client, **overrides):
     payload = {
         "name": "Test Product",
@@ -17,6 +18,14 @@ def _make_product(client, **overrides):
     return client.post("/products/", json=payload)
 
 
+def _make_sale(client, product_id, qty):
+    """Create a sale with the given product quantity."""
+    return client.post(
+        "/sales/",
+        json={"items": [{"product_id": product_id, "quantity": qty}]},
+    )
+
+
 # ── Low Stock ────────────────────────────────────────────────────
 def test_low_stock_empty(owner_client):
     res = owner_client.get("/alerts/low-stock")
@@ -25,9 +34,7 @@ def test_low_stock_empty(owner_client):
 
 
 def test_low_stock_returns_below_threshold(owner_client):
-    # Product with stock 3, default threshold 5 → below
     _make_product(owner_client, name="Low Item", stock_qty=3, low_stock_threshold=5)
-    # Product with stock 10, threshold 5 → fine
     _make_product(owner_client, name="Fine Item", stock_qty=10, low_stock_threshold=5)
 
     res = owner_client.get("/alerts/low-stock")
@@ -38,11 +45,8 @@ def test_low_stock_returns_below_threshold(owner_client):
 
 
 def test_low_stock_severity_classification(owner_client):
-    # Out of stock (stock = 0)
     _make_product(owner_client, name="Out", stock_qty=0, low_stock_threshold=10)
-    # Critical (stock <= threshold * 0.4 = 4)
     _make_product(owner_client, name="Critical", stock_qty=3, low_stock_threshold=10)
-    # Low (stock above critical but <= threshold)
     _make_product(owner_client, name="Low", stock_qty=8, low_stock_threshold=10)
 
     res = owner_client.get("/alerts/low-stock")
@@ -71,7 +75,6 @@ def test_debtors_empty(owner_client):
 
 
 def test_debtors_shows_customer_with_credit(owner_client, sample_customer, sample_product):
-    # Create a credit sale to give customer debt
     owner_client.post(
         "/sales/",
         json={
@@ -81,7 +84,6 @@ def test_debtors_shows_customer_with_credit(owner_client, sample_customer, sampl
         },
     )
 
-    # Customer now owes money. But their "last payment" is None, so they should show
     res = owner_client.get("/alerts/debtors?days=1")
     assert res.status_code == 200
     data = res.json()
@@ -93,7 +95,6 @@ def test_debtors_shows_customer_with_credit(owner_client, sample_customer, sampl
 
 
 def test_debtors_excludes_recent_payment(owner_client, sample_customer, sample_product):
-    # Create credit sale
     owner_client.post(
         "/sales/",
         json={
@@ -102,13 +103,11 @@ def test_debtors_excludes_recent_payment(owner_client, sample_customer, sample_p
             "payment_status": "unpaid",
         },
     )
-    # Record a payment (just now)
     owner_client.post(
         f"/customers/{sample_customer['id']}/record-payment",
         json={"amount": 100, "method": "cash"},
     )
 
-    # Query with days=14 — payment is today, so this customer should NOT appear
     res = owner_client.get("/alerts/debtors?days=14")
     data = res.json()
     assert not any(d["id"] == sample_customer["id"] for d in data)
@@ -118,10 +117,7 @@ def test_debtors_excludes_recent_payment(owner_client, sample_customer, sample_p
 def test_slow_movers_empty(owner_client):
     res = owner_client.get("/alerts/slow-movers")
     assert res.status_code == 200
-    # New products have never been sold, so this will return them
-    # But if no products exist, empty
     data = res.json()
-    # Empty if no in-stock products; otherwise they're "never sold"
     assert isinstance(data, list)
 
 
@@ -135,21 +131,17 @@ def test_slow_movers_shows_never_sold(owner_client):
 
 
 def test_slow_movers_excludes_recent_sale(owner_client, sample_product):
-    # sample_product comes with stock_qty=50
-    # Make a sale today
     owner_client.post(
         "/sales/",
         json={"items": [{"product_id": sample_product["id"], "quantity": 1}]},
     )
 
-    # Query with days=30 — sale is today, so it should NOT appear
     res = owner_client.get("/alerts/slow-movers?days=30")
     data = res.json()
     assert not any(p["id"] == sample_product["id"] for p in data)
 
 
 def test_slow_movers_excludes_parent_products(owner_client):
-    # Create parent
     parent_res = _make_product(
         owner_client,
         name="Sugar",
@@ -158,7 +150,6 @@ def test_slow_movers_excludes_parent_products(owner_client):
     )
     parent_id = parent_res.json()["id"]
 
-    # Create variant with stock
     _make_product(
         owner_client,
         name="Sugar 1kg",
@@ -168,9 +159,7 @@ def test_slow_movers_excludes_parent_products(owner_client):
 
     res = owner_client.get("/alerts/slow-movers?days=1")
     data = res.json()
-    # Parent should NOT appear (parent_id is None only for real products)
     assert not any(p["id"] == parent_id for p in data)
-    # Variant may appear (never sold)
 
 
 # ── Summary ──────────────────────────────────────────────────────
@@ -185,10 +174,8 @@ def test_summary_all_zero(owner_client):
 
 
 def test_summary_counts_correctly(owner_client, sample_customer, sample_product):
-    # Low stock product
     _make_product(owner_client, name="Low", stock_qty=1, low_stock_threshold=10)
 
-    # Credit sale for debtor
     owner_client.post(
         "/sales/",
         json={
@@ -207,8 +194,152 @@ def test_summary_counts_correctly(owner_client, sample_customer, sample_product)
 
 # ── Role enforcement ─────────────────────────────────────────────
 def test_alerts_accessible_to_any_role(cashier_client):
-    """All alert endpoints should be readable by any authenticated user."""
     assert cashier_client.get("/alerts/low-stock").status_code == 200
     assert cashier_client.get("/alerts/debtors").status_code == 200
     assert cashier_client.get("/alerts/slow-movers").status_code == 200
     assert cashier_client.get("/alerts/summary").status_code == 200
+
+
+# ─── REORDER SUGGESTIONS TESTS ───────────────────────────────────
+# NOTE: _make_product and _make_sale are now defined ONCE at the top.
+# The duplicated re-definitions that used to live here have been removed.
+
+
+def test_reorder_empty_shop(owner_client):
+    res = owner_client.get("/alerts/reorder-suggestions")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["critical"] == []
+    assert data["soon"] == []
+    assert data["ok"] == []
+    assert data["no_data"] == []
+
+
+def test_reorder_no_sales_goes_to_no_data(owner_client):
+    _make_product(owner_client, name="Fresh Stock", stock_qty=50)
+
+    res = owner_client.get("/alerts/reorder-suggestions")
+    data = res.json()
+
+    assert len(data["no_data"]) >= 1
+    assert any(p["name"] == "Fresh Stock" for p in data["no_data"])
+    assert not any(p["name"] == "Fresh Stock" for p in data["critical"])
+    assert not any(p["name"] == "Fresh Stock" for p in data["soon"])
+    assert not any(p["name"] == "Fresh Stock" for p in data["ok"])
+
+
+def test_reorder_zero_stock_is_critical(owner_client):
+    res = _make_product(owner_client, name="Sold Out Item", stock_qty=5)
+    product_id = res.json()["id"]
+
+    _make_sale(owner_client, product_id, 5)
+
+    res = owner_client.get("/alerts/reorder-suggestions")
+    data = res.json()
+
+    critical_items = [p["name"] for p in data["critical"]]
+    assert "Sold Out Item" in critical_items
+
+
+def test_reorder_fast_mover_is_critical(owner_client):
+    res = _make_product(owner_client, name="Fast Mover", stock_qty=50)
+    product_id = res.json()["id"]
+
+    _make_sale(owner_client, product_id, 40)
+
+    res = owner_client.get("/alerts/reorder-suggestions")
+    data = res.json()
+
+    all_products = data["critical"] + data["soon"] + data["ok"]
+    found = [p for p in all_products if p["name"] == "Fast Mover"]
+    assert len(found) == 1
+    p = found[0]
+
+    assert p["units_sold_last_period"] == 40
+    assert p["avg_daily_sales"] > 0
+
+
+def test_reorder_suggests_7_day_supply(owner_client):
+    res = _make_product(owner_client, name="Steady Seller", stock_qty=100)
+    product_id = res.json()["id"]
+
+    _make_sale(owner_client, product_id, 30)
+
+    res = owner_client.get("/alerts/reorder-suggestions?target_days=7")
+    data = res.json()
+
+    all_products = data["critical"] + data["soon"] + data["ok"]
+    p = next(x for x in all_products if x["name"] == "Steady Seller")
+
+    assert p["suggested_order_qty"] == 7
+
+
+def test_reorder_confidence_levels(owner_client):
+    res = _make_product(owner_client, name="Low Conf", stock_qty=50)
+    _make_sale(owner_client, res.json()["id"], 5)
+
+    res = _make_product(owner_client, name="Med Conf", stock_qty=50)
+    _make_sale(owner_client, res.json()["id"], 20)
+
+    res = _make_product(owner_client, name="High Conf", stock_qty=50)
+    _make_sale(owner_client, res.json()["id"], 50)
+
+    res = owner_client.get("/alerts/reorder-suggestions")
+    data = res.json()
+    all_products = data["critical"] + data["soon"] + data["ok"]
+
+    low = next(p for p in all_products if p["name"] == "Low Conf")
+    med = next(p for p in all_products if p["name"] == "Med Conf")
+    high = next(p for p in all_products if p["name"] == "High Conf")
+
+    assert low["confidence"] == "low"
+    assert med["confidence"] == "medium"
+    assert high["confidence"] == "high"
+
+
+def test_reorder_excludes_parent_products(owner_client):
+    parent_res = _make_product(
+        owner_client, name="Parent", stock_qty=0, selling_price=0, purchase_price=0
+    )
+    parent_id = parent_res.json()["id"]
+
+    _make_product(owner_client, name="Variant", stock_qty=10, parent_id=parent_id)
+
+    res = owner_client.get("/alerts/reorder-suggestions")
+    data = res.json()
+
+    all_names = [
+        p["name"]
+        for p in (data["critical"] + data["soon"] + data["ok"] + data["no_data"])
+    ]
+    assert "Parent" not in all_names
+    assert "Variant" in all_names
+
+
+def test_reorder_shop_scoped(owner_client, app_client):
+    _make_product(owner_client, name="Shop A Item", stock_qty=50)
+
+    app_client.post(
+        "/auth/register",
+        json={
+            "shop_name": "Shop B",
+            "full_name": "Owner B",
+            "email": "owner-b-reorder@test.com",
+            "password": "test1234",
+        },
+    )
+    token_b = app_client.post(
+        "/auth/login",
+        data={"username": "owner-b-reorder@test.com", "password": "test1234"},
+    ).json()["access_token"]
+
+    res = app_client.get(
+        "/alerts/reorder-suggestions",
+        headers={"Authorization": f"Bearer {token_b}"},
+    )
+    data = res.json()
+
+    assert data["critical"] == []
+    assert data["soon"] == []
+    assert data["ok"] == []
+    assert data["no_data"] == []

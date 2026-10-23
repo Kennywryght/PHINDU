@@ -11,8 +11,11 @@
     TrendingDown,
     DollarSign,
     Phone,
+    ShoppingCart,
+    RefreshCw,
   } from "lucide-svelte";
   import Layout from "../components/Layout.svelte";
+  import RestockModal from "../components/RestockModal.svelte";
   import API from "../api/api";
 
   let activeTab = "low-stock";
@@ -21,14 +24,31 @@
   let lowStock = [];
   let debtors = [];
   let slowMovers = [];
-  let summary = { low_stock: 0, debtors: 0, slow_movers: 0, total: 0 };
+  let reorder = { critical: [], soon: [], ok: [], no_data: [] };
+  let summary = {
+    low_stock: 0,
+    debtors: 0,
+    slow_movers: 0,
+    reorder: 0,
+    total: 0,
+  };
 
   // State
   let loading = true;
   let error = null;
 
+  // Restock modal
+  let showRestockModal = false;
+  let restockingProduct = null;
+
   onMount(async () => {
-    await Promise.all([fetchLowStock(), fetchDebtors(), fetchSlowMovers(), fetchSummary()]);
+    await Promise.all([
+      fetchLowStock(),
+      fetchDebtors(),
+      fetchSlowMovers(),
+      fetchReorder(),
+      fetchSummary(),
+    ]);
     loading = false;
   });
 
@@ -60,6 +80,15 @@
     }
   }
 
+  async function fetchReorder() {
+    try {
+      const res = await API.get("/alerts/reorder-suggestions?lookback_days=30&target_days=7");
+      reorder = res.data;
+    } catch (err) {
+      console.error("Failed to fetch reorder suggestions", err);
+    }
+  }
+
   async function fetchSummary() {
     try {
       const res = await API.get("/alerts/summary");
@@ -67,6 +96,18 @@
     } catch (err) {
       console.error("Failed to fetch summary", err);
     }
+  }
+
+  async function refreshAll() {
+    loading = true;
+    await Promise.all([
+      fetchLowStock(),
+      fetchDebtors(),
+      fetchSlowMovers(),
+      fetchReorder(),
+      fetchSummary(),
+    ]);
+    loading = false;
   }
 
   function severityLabel(severity) {
@@ -93,16 +134,46 @@
   function goToCredit() {
     window.location.href = "/credit";
   }
+
+  // Open restock modal for a product suggestion
+  function openRestock(product) {
+    // Build minimal product object expected by RestockModal
+    restockingProduct = {
+      id: product.product_id,
+      name: product.name,
+      stock_qty: product.stock_qty,
+      unit: product.unit,
+      purchase_price: product.purchase_price || 0,
+    };
+    showRestockModal = true;
+  }
+
+  function closeRestock() {
+    showRestockModal = false;
+    restockingProduct = null;
+  }
+
+  async function handleRestockSaved() {
+    closeRestock();
+    // Refresh all data (stock changed, reorder suggestions changed)
+    await refreshAll();
+  }
 </script>
 
 <Layout title="Alerts">
   <div class="alerts-page">
     <div class="page-header">
-      <h2>
-        <AlertTriangle size={22} strokeWidth={2} />
-        Alerts
-      </h2>
-      <p class="subtitle">What needs your attention today</p>
+      <div>
+        <h2>
+          <AlertTriangle size={22} strokeWidth={2} />
+          Alerts
+        </h2>
+        <p class="subtitle">What needs your attention today</p>
+      </div>
+      <button class="refresh-btn" on:click={refreshAll} disabled={loading} type="button">
+        <RefreshCw size={16} strokeWidth={2} />
+        Refresh
+      </button>
     </div>
 
     {#if loading}
@@ -110,6 +181,19 @@
     {:else}
       <!-- Tabs -->
       <div class="tabs">
+        <button
+          type="button"
+          class="tab"
+          class:active={activeTab === "reorder"}
+          on:click={() => (activeTab = "reorder")}
+        >
+          <ShoppingCart size={16} strokeWidth={2} />
+          <span>Reorder</span>
+          {#if summary.reorder > 0}
+            <span class="badge reorder-badge">{summary.reorder}</span>
+          {/if}
+        </button>
+
         <button
           type="button"
           class="tab"
@@ -149,6 +233,168 @@
           {/if}
         </button>
       </div>
+
+      <!-- TAB CONTENT: REORDER -->
+      {#if activeTab === "reorder"}
+        {#if reorder.critical.length === 0 &&
+          reorder.soon.length === 0 &&
+          reorder.ok.length === 0 &&
+          reorder.no_data.length === 0}
+          <div class="card success-card">
+            <CheckCircle2 size={48} strokeWidth={1.5} class="success-icon" />
+            <h3>No reorder data yet</h3>
+            <p>Add products and make sales to see smart reorder suggestions.</p>
+          </div>
+        {:else}
+          <!-- Critical -->
+          {#if reorder.critical.length > 0}
+            <div class="reorder-group">
+              <div class="group-header critical-header">
+                <AlertCircle size={18} strokeWidth={2} />
+                <span>Critical — Reorder Now</span>
+                <span class="group-count">{reorder.critical.length}</span>
+              </div>
+              <div class="reorder-list">
+                {#each reorder.critical as item}
+                  <div class="reorder-card critical-card">
+                    <div class="reorder-info">
+                      <h3>{item.name}</h3>
+                      <div class="reorder-meta">
+                        <span>
+                          <strong>{item.stock_qty}</strong> {item.unit} left
+                        </span>
+                        <span>
+                          Selling <strong>{item.avg_daily_sales}</strong>/day
+                        </span>
+                        <span class="urgency-text">
+                          {item.days_remaining !== null
+                            ? `${item.days_remaining} days left`
+                            : "OUT"}
+                        </span>
+                        <span class="confidence confidence-{item.confidence}">
+                          {item.confidence} confidence
+                        </span>
+                      </div>
+                      <div class="suggestion">
+                        <strong>Order {item.suggested_order_qty} {item.unit}</strong>
+                        {#if item.purchase_price}
+                          <span class="cost">
+                            (≈ MWK {(item.suggested_order_qty * item.purchase_price).toLocaleString()})
+                          </span>
+                        {/if}
+                      </div>
+                    </div>
+                    <button class="btn-action primary" on:click={() => openRestock(item)} type="button">
+                      Restock Now
+                    </button>
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {/if}
+
+          <!-- Soon -->
+          {#if reorder.soon.length > 0}
+            <div class="reorder-group">
+              <div class="group-header soon-header">
+                <Clock size={18} strokeWidth={2} />
+                <span>Soon — Order This Week</span>
+                <span class="group-count">{reorder.soon.length}</span>
+              </div>
+              <div class="reorder-list">
+                {#each reorder.soon as item}
+                  <div class="reorder-card soon-card">
+                    <div class="reorder-info">
+                      <h3>{item.name}</h3>
+                      <div class="reorder-meta">
+                        <span>
+                          <strong>{item.stock_qty}</strong> {item.unit} left
+                        </span>
+                        <span>
+                          Selling <strong>{item.avg_daily_sales}</strong>/day
+                        </span>
+                        <span class="urgency-text">
+                          {item.days_remaining !== null
+                            ? `${item.days_remaining} days left`
+                            : "—"}
+                        </span>
+                        <span class="confidence confidence-{item.confidence}">
+                          {item.confidence} confidence
+                        </span>
+                      </div>
+                      <div class="suggestion">
+                        <strong>Suggest ordering {item.suggested_order_qty} {item.unit}</strong>
+                      </div>
+                    </div>
+                    <button class="btn-action" on:click={() => openRestock(item)} type="button">
+                      Restock
+                    </button>
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {/if}
+
+          <!-- OK -->
+          {#if reorder.ok.length > 0}
+            <div class="reorder-group">
+              <div class="group-header ok-header">
+                <CheckCircle2 size={18} strokeWidth={2} />
+                <span>OK — Well Stocked</span>
+                <span class="group-count">{reorder.ok.length}</span>
+              </div>
+              <div class="reorder-list">
+                {#each reorder.ok as item}
+                  <div class="reorder-card ok-card">
+                    <div class="reorder-info">
+                      <h3>{item.name}</h3>
+                      <div class="reorder-meta">
+                        <span>
+                          <strong>{item.stock_qty}</strong> {item.unit} left
+                        </span>
+                        <span>
+                          Selling <strong>{item.avg_daily_sales}</strong>/day
+                        </span>
+                        <span class="urgency-text">
+                          {item.days_remaining !== null
+                            ? `${item.days_remaining} days left`
+                            : "—"}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {/if}
+
+          <!-- No Data -->
+          {#if reorder.no_data.length > 0}
+            <div class="reorder-group">
+              <div class="group-header no-data-header">
+                <AlertTriangle size={18} strokeWidth={2} />
+                <span>Not Enough Sales History</span>
+                <span class="group-count">{reorder.no_data.length}</span>
+              </div>
+              <div class="reorder-list">
+                {#each reorder.no_data as item}
+                  <div class="reorder-card no-data-card">
+                    <div class="reorder-info">
+                      <h3>{item.name}</h3>
+                      <div class="reorder-meta">
+                        <span>
+                          <strong>{item.stock_qty}</strong> {item.unit} in stock
+                        </span>
+                        <span class="muted">No sales in last 30 days</span>
+                      </div>
+                    </div>
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {/if}
+        {/if}
+      {/if}
 
       <!-- TAB CONTENT: LOW STOCK -->
       {#if activeTab === "low-stock"}
@@ -281,6 +527,14 @@
   </div>
 </Layout>
 
+{#if showRestockModal && restockingProduct}
+  <RestockModal
+    product={restockingProduct}
+    on:saved={handleRestockSaved}
+    on:close={closeRestock}
+  />
+{/if}
+
 <style>
   .alerts-page {
     max-width: 900px;
@@ -288,7 +542,12 @@
   }
 
   .page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
     margin-bottom: 1.5rem;
+    gap: 1rem;
+    flex-wrap: wrap;
   }
 
   .page-header h2 {
@@ -305,6 +564,32 @@
     color: var(--text-light, #6b7280);
     margin-top: 0.25rem;
     font-size: 0.88rem;
+  }
+
+  .refresh-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.45rem 0.85rem;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--text, #111827);
+    transition: all 0.15s;
+    flex-shrink: 0;
+  }
+
+  .refresh-btn:hover:not(:disabled) {
+    border-color: var(--primary, #0f6b3e);
+    color: var(--primary, #0f6b3e);
+  }
+
+  .refresh-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   .state-box {
@@ -366,7 +651,179 @@
     color: white;
   }
 
-  /* ============ ALERT LIST ============ */
+  .tab:not(.active) .badge.reorder-badge {
+    background: #ea580c;
+  }
+
+  /* ============ REORDER GROUPS ============ */
+  .reorder-group {
+    margin-bottom: 1.5rem;
+  }
+
+  .group-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    margin-bottom: 0.6rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: 8px;
+  }
+
+  .group-header.critical-header {
+    background: #fee2e2;
+    color: #991b1b;
+  }
+
+  .group-header.soon-header {
+    background: #ffedd5;
+    color: #9a3412;
+  }
+
+  .group-header.ok-header {
+    background: #dcfce7;
+    color: #166534;
+  }
+
+  .group-header.no-data-header {
+    background: var(--background, #f9fafb);
+    color: var(--text-light, #6b7280);
+  }
+
+  .group-count {
+    margin-left: auto;
+    background: rgba(0, 0, 0, 0.1);
+    padding: 0.1rem 0.5rem;
+    border-radius: 20px;
+    font-size: 0.75rem;
+  }
+
+  .reorder-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .reorder-card {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.9rem 1rem;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-left: 4px solid var(--border, #e5e7eb);
+    border-radius: 10px;
+  }
+
+  .critical-card {
+    border-left-color: #dc2626;
+    background: #fef2f2;
+  }
+
+  .soon-card {
+    border-left-color: #ea580c;
+    background: #fff7ed;
+  }
+
+  .ok-card {
+    border-left-color: #16a34a;
+    background: #f0fdf4;
+  }
+
+  .no-data-card {
+    border-left-color: var(--border, #e5e7eb);
+    background: var(--background, #f9fafb);
+    opacity: 0.85;
+  }
+
+  .reorder-info {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .reorder-info h3 {
+    margin: 0 0 0.35rem;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text, #111827);
+  }
+
+  .reorder-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 0.9rem;
+    font-size: 0.78rem;
+    color: var(--text-light, #6b7280);
+    margin-bottom: 0.4rem;
+    align-items: center;
+  }
+
+  .reorder-meta strong {
+    color: var(--text, #111827);
+    font-weight: 600;
+  }
+
+  .urgency-text {
+    color: #dc2626;
+    font-weight: 600;
+  }
+
+  .soon-card .urgency-text {
+    color: #ea580c;
+  }
+
+  .ok-card .urgency-text {
+    color: #16a34a;
+  }
+
+  .confidence {
+    font-size: 0.68rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+
+  .confidence-high {
+    background: #dcfce7;
+    color: #166534;
+  }
+
+  .confidence-medium {
+    background: #fef3c7;
+    color: #92400e;
+  }
+
+  .confidence-low {
+    background: #fee2e2;
+    color: #991b1b;
+  }
+
+  .suggestion {
+    font-size: 0.85rem;
+    color: var(--text, #111827);
+  }
+
+  .suggestion strong {
+    font-weight: 700;
+    color: var(--primary, #0f6b3e);
+  }
+
+  .suggestion .cost {
+    font-size: 0.78rem;
+    color: var(--text-light, #6b7280);
+    margin-left: 0.4rem;
+  }
+
+  .muted {
+    color: var(--text-light, #6b7280);
+    font-style: italic;
+  }
+
+  /* ============ ALERT LIST (existing tabs) ============ */
   .alert-list {
     display: flex;
     flex-direction: column;
@@ -509,6 +966,14 @@
     transition: background 0.15s;
   }
 
+  .btn-action.primary {
+    background: #dc2626;
+  }
+
+  .btn-action.primary:hover {
+    background: #991b1b;
+  }
+
   .btn-action:hover {
     background: var(--primary-dark, #0a4f2e);
   }
@@ -546,7 +1011,8 @@
 
   /* ============ MOBILE ============ */
   @media (max-width: 640px) {
-    .alert-item {
+    .alert-item,
+    .reorder-card {
       flex-direction: column;
       align-items: stretch;
       gap: 0.75rem;
@@ -565,6 +1031,10 @@
     .btn-action {
       width: 100%;
       justify-content: center;
+    }
+
+    .group-header {
+      font-size: 0.78rem;
     }
   }
 </style>

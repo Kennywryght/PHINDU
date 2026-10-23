@@ -1,6 +1,6 @@
 <script>
   import { createEventDispatcher, onMount } from "svelte";
-  import { X, Package, TrendingUp, PackagePlus } from "lucide-svelte";
+  import { X, Package, TrendingUp, PackagePlus, Clock } from "lucide-svelte";
   import API from "../api/api";
   import PriceHistoryModal from "./PriceHistoryModal.svelte";
   import RestockHistoryModal from "./RestockHistoryModal.svelte";
@@ -15,6 +15,9 @@
   let showHistoryModal = false;
   let showRestockHistoryModal = false;
   let showRestockModal = false;
+
+  // 🔧 NEW: restock prediction
+  let restockPrediction = null;
 
   let form = {
     name: "",
@@ -43,7 +46,9 @@
     isVariantMode = !!product.parent_id;
   }
 
+  // 🔧 NEW: Fetch restock prediction on mount (only for existing products)
   onMount(async () => {
+    // Fetch parents
     try {
       const res = await API.get("/products/?parents_only=true");
       parents = res.data.filter((p) => !product || p.id !== product.id);
@@ -51,6 +56,16 @@
       console.error("Failed to load parents", err);
     } finally {
       loadingParents = false;
+    }
+
+    // Fetch restock prediction (existing product only)
+    if (product && product.id) {
+      try {
+        const predRes = await API.get(`/products/${product.id}/restock-prediction`);
+        restockPrediction = predRes.data;
+      } catch (err) {
+        console.error("Failed to load restock prediction", err);
+      }
     }
   });
 
@@ -114,13 +129,41 @@
     showRestockModal = false;
   }
 
-  function handleRestockSaved(event) {
+  async function handleRestockSaved(event) {
     showRestockModal = false;
     // Update local form stock to reflect added
     if (event.detail?.product) {
       form.stock_qty = event.detail.product.stock_qty;
     }
+    // Refresh prediction (stock changed)
+    if (product && product.id) {
+      try {
+        const predRes = await API.get(`/products/${product.id}/restock-prediction`);
+        restockPrediction = predRes.data;
+      } catch {
+        // Silent fail
+      }
+    }
     dispatch("restocked", event.detail);
+  }
+
+  // 🔧 NEW: prediction helpers
+  function predictionClass(pred) {
+    if (!pred || pred.days_until_restock === null) return "";
+    const d = pred.days_until_restock;
+    if (d <= 3) return "critical";
+    if (d <= 7) return "soon";
+    return "ok";
+  }
+
+  function predictionText(pred) {
+    if (!pred) return "";
+    if (pred.days_until_restock === null) return "Not enough data yet";
+    const d = pred.days_until_restock;
+    if (d < 0) return `Overdue by ${Math.abs(d)} days`;
+    if (d === 0) return "Restock today";
+    if (d === 1) return "Restock tomorrow";
+    return `Restock in ~${d} days`;
   }
 </script>
 
@@ -238,6 +281,21 @@
       </div>
 
       {#if product}
+        <!-- 🔧 NEW: Restock prediction hint -->
+        {#if restockPrediction && restockPrediction.method !== "no_data"}
+          <div class="prediction-hint {predictionClass(restockPrediction)}">
+            <Clock size={14} strokeWidth={2} />
+            <strong>{predictionText(restockPrediction)}</strong>
+            {#if restockPrediction.confidence === "high"}
+              <span class="confidence-tag">high confidence</span>
+            {:else if restockPrediction.confidence === "medium"}
+              <span class="confidence-tag">medium confidence</span>
+            {:else if restockPrediction.confidence === "low"}
+              <span class="confidence-tag">estimated</span>
+            {/if}
+          </div>
+        {/if}
+
         <!-- Quick actions for existing products -->
         <div class="quick-actions">
           <button type="button" class="action-card" on:click={openRestock}>
@@ -399,6 +457,47 @@
     outline: none;
     border-color: var(--primary, #0f6b3e);
     box-shadow: 0 0 0 3px rgba(15, 107, 62, 0.1);
+  }
+
+  /* 🔧 NEW: Prediction hint */
+  .prediction-hint {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.6rem 0.85rem;
+    border-radius: 8px;
+    font-size: 0.83rem;
+    margin-bottom: 0.75rem;
+    font-weight: 500;
+    border-left: 3px solid transparent;
+  }
+
+  .prediction-hint.critical {
+    background: #fee2e2;
+    color: #991b1b;
+    border-left-color: #dc2626;
+  }
+
+  .prediction-hint.soon {
+    background: #fef3c7;
+    color: #92400e;
+    border-left-color: #ea580c;
+  }
+
+  .prediction-hint.ok {
+    background: #dcfce7;
+    color: #166534;
+    border-left-color: #16a34a;
+  }
+
+  .confidence-tag {
+    background: rgba(0, 0, 0, 0.08);
+    padding: 0.05rem 0.4rem;
+    border-radius: 20px;
+    font-size: 0.7rem;
+    margin-left: auto;
+    font-weight: 600;
+    white-space: nowrap;
   }
 
   .quick-actions {

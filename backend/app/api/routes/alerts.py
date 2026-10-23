@@ -1,6 +1,7 @@
-"""Alerts routes — low stock, debtors, slow movers, summary."""
+"""Alerts routes — low stock, debtors, slow movers, reorder, summary."""
 
 from datetime import datetime, timedelta
+from math import ceil
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func
@@ -42,11 +43,6 @@ def low_stock_alert(
 ):
     """
     Return products at or below their low-stock threshold.
-
-    Each product is classified by urgency:
-    - "out_of_stock" — stock_qty <= 0
-    - "critical" — stock_qty <= threshold * 0.4
-    - "low" — stock_qty <= threshold (but above critical)
     """
     products = (
         db.query(Product)
@@ -84,14 +80,9 @@ def debtors_alert(
 ):
     """
     Return customers who owe money and haven't paid in `days` days.
-
-    Includes:
-    - Customers with total_credit > 0
-    - Whose last payment is older than `days` days (or who never paid)
     """
     cutoff = datetime.utcnow() - timedelta(days=days)
 
-    # Get all customers with outstanding credit
     customers_with_credit = (
         db.query(Customer)
         .filter(
@@ -101,7 +92,6 @@ def debtors_alert(
         .all()
     )
 
-    # For each, find last payment date
     result = []
     for c in customers_with_credit:
         last_payment = (
@@ -110,7 +100,6 @@ def debtors_alert(
             .scalar()
         )
 
-        # Skip if paid recently
         if last_payment and last_payment >= cutoff:
             continue
 
@@ -126,7 +115,6 @@ def debtors_alert(
             "never_paid": last_payment is None,
         })
 
-    # Sort by credit amount descending (biggest debtors first)
     result.sort(key=lambda x: x["total_credit"], reverse=True)
     return result
 
@@ -140,12 +128,9 @@ def slow_movers_alert(
 ):
     """
     Return products with stock but no sales in `days` days.
-
-    Only includes top-level products (excludes parent groups with variants).
     """
     cutoff = datetime.utcnow() - timedelta(days=days)
 
-    # Get all in-stock, non-deleted, non-parent products
     products = (
         db.query(Product)
         .filter(
@@ -160,7 +145,6 @@ def slow_movers_alert(
 
     result = []
     for p in products:
-        # Get last sale date (non-voided sales)
         last_sale = (
             db.query(func.max(Sale.created_at))
             .join(SaleItem, SaleItem.sale_id == Sale.id)
@@ -172,7 +156,6 @@ def slow_movers_alert(
             .scalar()
         )
 
-        # Skip if sold recently
         if last_sale and last_sale >= cutoff:
             continue
 
@@ -190,11 +173,177 @@ def slow_movers_alert(
             "never_sold": last_sale is None,
         })
 
-    # Sort by days without sale (never sold first, then oldest)
     result.sort(
         key=lambda x: (x["days_since_last_sale"] is not None, x["days_since_last_sale"] or 99999),
         reverse=True,
     )
+    return result
+
+
+# ── Reorder Suggestions ──────────────────────────────────────────
+def _compute_reorder_suggestions(
+    db: Session, shop_id: str, lookback_days: int = 30, target_days: int = 7
+) -> dict:
+    """
+    Core logic: for each sellable product, compute:
+      - avg_daily_sales over last `lookback_days`
+      - days_remaining = stock / avg_daily
+      - suggested_order = ceil(avg_daily × target_days)
+
+    Classifies into: critical (<3d), soon (<7d), ok (≥7d), no_data.
+
+    Includes: variants (parent_id set) + standalone products (no variants).
+    Excludes: parent products (containers that have variant children).
+    """
+    cutoff = datetime.utcnow() - timedelta(days=lookback_days)
+
+    # Find parents (products that have variant children)
+    parent_ids_with_variants = {
+        row.parent_id
+        for row in db.query(Product.parent_id)
+        .filter(
+            Product.shop_id == shop_id,
+            Product.parent_id.isnot(None),
+            Product.is_deleted == False,
+        )
+        .distinct()
+        .all()
+        if row.parent_id
+    }
+
+    # Load all non-deleted, non-archived products
+    all_candidates = (
+        db.query(Product)
+        .filter(
+            Product.shop_id == shop_id,
+            Product.is_deleted == False,
+            Product.archived == False,
+        )
+        .all()
+    )
+
+    # Keep only sellable products:
+    #   - Variants (parent_id IS NOT NULL) → what you actually sell
+    #   - Standalone (parent_id IS NULL AND no variant children)
+    # Exclude parents (parent_id IS NULL AND has variant children)
+    products = [
+        p
+        for p in all_candidates
+        if (p.parent_id is not None) or (p.id not in parent_ids_with_variants)
+    ]
+
+    if not products:
+        return {"critical": [], "soon": [], "ok": [], "no_data": []}
+
+    product_ids = [p.id for p in products]
+
+    # Batch query: total units sold per product in lookback window
+    sold_rows = (
+        db.query(SaleItem.product_id, func.sum(SaleItem.quantity).label("total_qty"))
+        .join(Sale, Sale.id == SaleItem.sale_id)
+        .filter(
+            SaleItem.product_id.in_(product_ids),
+            Sale.shop_id == shop_id,
+            Sale.is_voided == False,
+            Sale.created_at >= cutoff,
+        )
+        .group_by(SaleItem.product_id)
+        .all()
+    )
+    sold_by_product = {row.product_id: float(row.total_qty or 0) for row in sold_rows}
+
+    critical = []
+    soon = []
+    ok = []
+    no_data = []
+
+    for p in products:
+        units_sold = sold_by_product.get(p.id, 0.0)
+        stock = p.stock_qty or 0
+
+        # Confidence based on data volume
+        if units_sold < 10:
+            confidence = "low"
+        elif units_sold < 30:
+            confidence = "medium"
+        else:
+            confidence = "high"
+
+        base = {
+            "product_id": p.id,
+            "name": p.name,
+            "category": p.category,
+            "unit": p.unit or "unit",
+            "stock_qty": stock,
+            "selling_price": p.selling_price or 0,
+            "purchase_price": p.purchase_price or 0,
+            "units_sold_last_period": units_sold,
+            "lookback_days": lookback_days,
+            "confidence": confidence,
+        }
+
+        # No sales history at all → "no_data" bucket
+        if units_sold <= 0:
+            base["avg_daily_sales"] = 0.0
+            base["days_remaining"] = None
+            base["suggested_order_qty"] = 0
+            base["urgency"] = "no_data"
+            no_data.append(base)
+            continue
+
+        avg_daily = units_sold / lookback_days
+        days_remaining = (stock / avg_daily) if avg_daily > 0 else float("inf")
+        suggested_order = max(1, ceil(avg_daily * target_days))
+
+        base["avg_daily_sales"] = round(avg_daily, 2)
+        base["days_remaining"] = (
+            round(days_remaining, 1) if days_remaining != float("inf") else None
+        )
+        base["suggested_order_qty"] = suggested_order
+
+        # Classify urgency
+        if stock <= 0 or days_remaining < 3:
+            base["urgency"] = "critical"
+            critical.append(base)
+        elif days_remaining < 7:
+            base["urgency"] = "soon"
+            soon.append(base)
+        else:
+            base["urgency"] = "ok"
+            ok.append(base)
+
+    # Sort each bucket by days_remaining
+    critical.sort(
+        key=lambda x: x["days_remaining"] if x["days_remaining"] is not None else -1
+    )
+    soon.sort(
+        key=lambda x: x["days_remaining"] if x["days_remaining"] is not None else 9999
+    )
+    ok.sort(key=lambda x: x["days_remaining"] if x["days_remaining"] is not None else 9999)
+    no_data.sort(key=lambda x: x["name"])
+
+    return {
+        "critical": critical,
+        "soon": soon,
+        "ok": ok,
+        "no_data": no_data,
+    }
+
+
+@router.get("/reorder-suggestions")
+def reorder_suggestions(
+    lookback_days: int = Query(30, ge=7, le=90, description="Days of sales history to analyze"),
+    target_days: int = Query(7, ge=1, le=30, description="Target days of stock to order"),
+    db: Session = Depends(get_db),
+    shop_id: str = Depends(get_current_shop_id),
+):
+    """
+    Smart reorder suggestions based on sales velocity.
+    """
+    result = _compute_reorder_suggestions(db, shop_id, lookback_days, target_days)
+    result["generated_at"] = datetime.utcnow().isoformat()
+    result["lookback_days"] = lookback_days
+    result["target_days"] = target_days
     return result
 
 
@@ -209,7 +358,6 @@ def alerts_summary(
     """
     Counts of each alert type — used for badge on navigation.
     """
-    # Low stock count
     low_stock_count = (
         db.query(func.count(Product.id))
         .filter(
@@ -222,7 +370,6 @@ def alerts_summary(
         or 0
     )
 
-    # Debtors count (simplified — customers with credit and no recent payment)
     cutoff_debtors = datetime.utcnow() - timedelta(days=debtors_days)
     customers_with_credit = (
         db.query(Customer)
@@ -239,7 +386,6 @@ def alerts_summary(
         if not last_payment or last_payment < cutoff_debtors:
             debtors_count += 1
 
-    # Slow movers count (approximate — products with stock, check last sale)
     cutoff_slow = datetime.utcnow() - timedelta(days=slow_movers_days)
     in_stock_products = (
         db.query(Product)
@@ -267,9 +413,14 @@ def alerts_summary(
         if not last_sale or last_sale < cutoff_slow:
             slow_count += 1
 
+    # Reorder count (critical + soon)
+    reorder_data = _compute_reorder_suggestions(db, shop_id)
+    reorder_count = len(reorder_data["critical"]) + len(reorder_data["soon"])
+
     return {
         "low_stock": low_stock_count,
         "debtors": debtors_count,
         "slow_movers": slow_count,
-        "total": low_stock_count + debtors_count + slow_count,
+        "reorder": reorder_count,
+        "total": low_stock_count + debtors_count + slow_count + reorder_count,
     }
