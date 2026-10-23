@@ -285,3 +285,115 @@ def test_cannot_delete_parent_with_variants(owner_client):
     res = owner_client.delete(f"/products/{parent_id}")
     assert res.status_code == 400
     assert "variant" in res.json()["detail"].lower()
+    
+
+
+# ─── PRICE HISTORY TESTS ──────────────────────────────────────────
+
+
+def test_price_history_seeded_on_create(owner_client):
+    """Creating a product logs initial selling + purchase price history."""
+    res = _create_product(
+        owner_client,
+        name="Sugar",
+        selling_price=1500,
+        purchase_price=1000,
+    )
+    product_id = res.json()["id"]
+
+    history_res = owner_client.get(f"/products/{product_id}/price-history")
+    assert history_res.status_code == 200
+    data = history_res.json()
+    # Two entries: one selling, one purchase
+    types = {h["price_type"] for h in data["history"]}
+    assert types == {"selling", "purchase"}
+
+
+def test_price_history_selling_change(owner_client):
+    """Updating selling price logs a selling entry."""
+    res = _create_product(owner_client, name="A", selling_price=1000, purchase_price=700)
+    product_id = res.json()["id"]
+
+    # Change selling price
+    owner_client.put(f"/products/{product_id}", json={"selling_price": 1500})
+
+    history_res = owner_client.get(f"/products/{product_id}/price-history")
+    data = history_res.json()
+    selling_changes = [
+        h for h in data["history"]
+        if h["price_type"] == "selling" and h["old_price"] == 1000 and h["new_price"] == 1500
+    ]
+    assert len(selling_changes) == 1
+    assert selling_changes[0]["change_percent"] == 50.0
+
+
+def test_price_history_purchase_change(owner_client):
+    """Updating purchase price logs a purchase entry (was previously untracked)."""
+    res = _create_product(owner_client, name="B", selling_price=1000, purchase_price=700)
+    product_id = res.json()["id"]
+
+    # Change purchase price
+    owner_client.put(f"/products/{product_id}", json={"purchase_price": 900})
+
+    history_res = owner_client.get(f"/products/{product_id}/price-history")
+    data = history_res.json()
+    purchase_changes = [
+        h for h in data["history"]
+        if h["price_type"] == "purchase" and h["old_price"] == 700 and h["new_price"] == 900
+    ]
+    assert len(purchase_changes) == 1
+
+
+def test_price_history_no_change_no_log(owner_client):
+    """Updating with same values logs nothing."""
+    res = _create_product(owner_client, name="C", selling_price=1000, purchase_price=700)
+    product_id = res.json()["id"]
+
+    # Get count of history
+    before = len(owner_client.get(f"/products/{product_id}/price-history").json()["history"])
+
+    # Update with identical value
+    owner_client.put(f"/products/{product_id}", json={"selling_price": 1000})
+
+    after = len(owner_client.get(f"/products/{product_id}/price-history").json()["history"])
+    assert after == before
+
+
+def test_price_history_returns_current_margin(owner_client):
+    """Response includes current selling, purchase, and computed margin."""
+    res = _create_product(owner_client, name="D", selling_price=1500, purchase_price=1000)
+    product_id = res.json()["id"]
+
+    data = owner_client.get(f"/products/{product_id}/price-history").json()
+    product = data["product"]
+    assert product["current_selling_price"] == 1500
+    assert product["current_purchase_price"] == 1000
+    # Margin = (1500 - 1000) / 1500 * 100 = 33.33%
+    assert product["current_margin_percent"] == 33.33
+
+
+def test_price_history_shop_scoped(owner_client, app_client):
+    """Another shop cannot see this product's price history."""
+    res = _create_product(owner_client, name="E", selling_price=1000, purchase_price=700)
+    product_id = res.json()["id"]
+
+    # Register a second shop
+    app_client.post(
+        "/auth/register",
+        json={
+            "shop_name": "Shop B",
+            "full_name": "Owner B",
+            "email": "owner-b@test.com",
+            "password": "test1234",
+        },
+    )
+    token_b = app_client.post(
+        "/auth/login",
+        data={"username": "owner-b@test.com", "password": "test1234"},
+    ).json()["access_token"]
+
+    res = app_client.get(
+        f"/products/{product_id}/price-history",
+        headers={"Authorization": f"Bearer {token_b}"},
+    )
+    assert res.status_code == 404  # Not found = not visible

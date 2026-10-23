@@ -73,13 +73,7 @@ def create_product(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """Create a new product or variant.
-
-    - If `parent_id` is provided, this product becomes a variant.
-    - If `parent_id` is null, this product is a top-level product or parent.
-    - Parent products should have selling_price=0, purchase_price=0, stock_qty=0.
-    """
-    # Validate parent
+    """Create a new product or variant."""
     if product.parent_id:
         parent = (
             db.query(Product)
@@ -113,7 +107,6 @@ def create_product(
     db.commit()
     db.refresh(new_product)
 
-    # Only create batch if actual stock
     if new_product.stock_qty and new_product.stock_qty > 0:
         batch = StockBatch(
             shop_id=shop_id,
@@ -124,15 +117,26 @@ def create_product(
         db.add(batch)
         db.commit()
 
-    # Seed initial price history only if selling_price > 0
+    # Seed initial price history (both selling and purchase)
     if new_product.selling_price and new_product.selling_price > 0:
-        initial_history = PriceHistory(
-            product_id=new_product.id,
-            old_price=None,
-            new_price=new_product.selling_price,
+        db.add(
+            PriceHistory(
+                product_id=new_product.id,
+                old_price=None,
+                new_price=new_product.selling_price,
+                price_type="selling",
+            )
         )
-        db.add(initial_history)
-        db.commit()
+    if new_product.purchase_price and new_product.purchase_price > 0:
+        db.add(
+            PriceHistory(
+                product_id=new_product.id,
+                old_price=None,
+                new_price=new_product.purchase_price,
+                price_type="purchase",
+            )
+        )
+    db.commit()
 
     return _product_to_out(new_product)
 
@@ -140,8 +144,8 @@ def create_product(
 @router.get("/", response_model=list[ProductOut])
 def get_products(
     include_deleted: bool = False,
-    parents_only: bool = Query(False, description="Only return top-level products (no variants)"),
-    include_archived: bool = Query(True, description="Include archived products"),
+    parents_only: bool = Query(False),
+    include_archived: bool = Query(True),
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
@@ -182,6 +186,70 @@ def get_product(
     return _product_to_out(product, variant_count=vc)
 
 
+# 🔧 NEW: Price history endpoint
+@router.get("/{product_id}/price-history")
+def get_price_history(
+    product_id: str,
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(get_db),
+    shop_id: str = Depends(get_current_shop_id),
+):
+    """Return price change history for a product, newest first."""
+    product = (
+        db.query(Product)
+        .filter(Product.id == product_id, Product.shop_id == shop_id)
+        .first()
+    )
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    history = (
+        db.query(PriceHistory)
+        .filter(PriceHistory.product_id == product_id)
+        .order_by(PriceHistory.changed_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    result = []
+    for h in history:
+        old = h.old_price or 0
+        new = h.new_price or 0
+        change_pct = None
+        if old > 0:
+            change_pct = round((new - old) / old * 100, 2)
+        result.append({
+            "id": h.id,
+            "price_type": h.price_type or "selling",
+            "old_price": old,
+            "new_price": new,
+            "change_percent": change_pct,
+            "changed_at": h.changed_at.isoformat() if h.changed_at else None,
+        })
+
+    # Also return current state for context
+    current_margin = None
+    if product.selling_price and product.selling_price > 0:
+        current_margin = round(
+            (product.selling_price - (product.purchase_price or 0))
+            / product.selling_price
+            * 100,
+            2,
+        )
+
+    return {
+        "product": {
+            "id": product.id,
+            "name": product.name,
+            "unit": product.unit,
+            "current_selling_price": product.selling_price or 0,
+            "current_purchase_price": product.purchase_price or 0,
+            "current_margin_percent": current_margin,
+        },
+        "history": result,
+    }
+
+
 @router.get("/{parent_id}/variants", response_model=list[VariantSummary])
 def get_variants(
     parent_id: str,
@@ -220,7 +288,7 @@ def delete_product(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """Delete a product. Blocks if it has active variants (must delete them first)."""
+    """Delete a product. Blocks if it has active variants."""
     product = (
         db.query(Product)
         .filter(Product.id == product_id, Product.shop_id == shop_id)
@@ -229,7 +297,6 @@ def delete_product(
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    # Block deletion if this is a parent with active variants
     variant_count = _variant_count_for(db, product_id, shop_id)
     if variant_count > 0:
         raise HTTPException(
@@ -256,7 +323,7 @@ def update_product(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """Update product fields."""
+    """Update product fields. Logs price changes (both selling and purchase)."""
     product = (
         db.query(Product)
         .filter(Product.id == product_id, Product.shop_id == shop_id)
@@ -267,14 +334,31 @@ def update_product(
 
     update_data = product_update.model_dump(exclude_unset=True)
 
+    # Track selling_price change
     if "selling_price" in update_data and update_data["selling_price"] is not None:
-        if update_data["selling_price"] != product.selling_price:
-            history = PriceHistory(
-                product_id=product.id,
-                old_price=product.selling_price,
-                new_price=update_data["selling_price"],
+        new_selling = update_data["selling_price"]
+        if new_selling != product.selling_price:
+            db.add(
+                PriceHistory(
+                    product_id=product.id,
+                    old_price=product.selling_price,
+                    new_price=new_selling,
+                    price_type="selling",
+                )
             )
-            db.add(history)
+
+    # 🔧 NEW: Track purchase_price change
+    if "purchase_price" in update_data and update_data["purchase_price"] is not None:
+        new_purchase = update_data["purchase_price"]
+        if new_purchase != product.purchase_price:
+            db.add(
+                PriceHistory(
+                    product_id=product.id,
+                    old_price=product.purchase_price,
+                    new_price=new_purchase,
+                    price_type="purchase",
+                )
+            )
 
     if "stock_qty" in update_data and update_data["stock_qty"] is not None:
         new_stock = update_data["stock_qty"]
@@ -291,10 +375,12 @@ def update_product(
         product.stock_qty = new_stock
 
     for field, value in update_data.items():
-        if field not in ("stock_qty", "selling_price"):
+        if field not in ("stock_qty", "selling_price", "purchase_price"):
             setattr(product, field, value)
         elif field == "selling_price":
             product.selling_price = value
+        elif field == "purchase_price":
+            product.purchase_price = value
 
     db.commit()
     db.refresh(product)

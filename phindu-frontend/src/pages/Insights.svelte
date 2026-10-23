@@ -8,6 +8,10 @@
     Receipt,
     FileSpreadsheet,
     Package,
+    TrendingUp,
+    TrendingDown,
+    Minus,
+    Bell,
   } from "lucide-svelte";
   import Layout from "../components/Layout.svelte";
   import API from "../api/api";
@@ -30,6 +34,9 @@
   let expenseBreakdown = [];
   let breakdownLoading = false;
 
+  let recentPriceChanges = [];
+  let priceChangesLoading = false;
+
   onMount(async () => {
     await Promise.all([
       fetchInsights(),
@@ -37,6 +44,7 @@
       fetchProfitMargins(),
       fetchPeakHours(),
       fetchExpenseBreakdown(),
+      fetchRecentPriceChanges(),
     ]);
   });
 
@@ -85,7 +93,7 @@
       const res = await API.get("/analytics/peak-hours");
       peakHours = res.data.hours;
     } catch {
-      console.error("Peak hours failed", err);
+      console.error("Peak hours failed");
     } finally {
       peakLoading = false;
     }
@@ -97,9 +105,54 @@
       const res = await API.get("/analytics/expense-breakdown");
       expenseBreakdown = res.data;
     } catch {
-      console.error("Expense breakdown failed", err);
+      console.error("Expense breakdown failed");
     } finally {
       breakdownLoading = false;
+    }
+  }
+
+  // 🔧 NEW: Fetch recent price changes
+  async function fetchRecentPriceChanges() {
+    priceChangesLoading = true;
+    try {
+      // Fetch all products with recent price changes
+      const productsRes = await API.get("/products/");
+      const products = productsRes.data.filter((p) => !p.is_deleted && !p.is_parent);
+
+      // For each product, fetch its price history
+      const allChanges = [];
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+      for (const p of products) {
+        try {
+          const histRes = await API.get(`/products/${p.id}/price-history?limit=5`);
+          const recent = histRes.data.history.filter(
+            (h) => new Date(h.changed_at) >= thirtyDaysAgo
+          );
+          if (recent.length > 0) {
+            allChanges.push({
+              product: histRes.data.product,
+              changes: recent,
+            });
+          }
+        } catch {
+          // Ignore per-product failures
+        }
+      }
+
+      // Sort by most recent change
+      allChanges.sort((a, b) => {
+        const aDate = new Date(a.changes[0]?.changed_at).getTime();
+        const bDate = new Date(b.changes[0]?.changed_at).getTime();
+        return bDate - aDate;
+      });
+
+      recentPriceChanges = allChanges.slice(0, 5); // Top 5
+    } catch (err) {
+      console.error("Price changes failed", err);
+    } finally {
+      priceChangesLoading = false;
     }
   }
 
@@ -132,7 +185,12 @@
     XLSX.writeFile(wb, `phindu_products_${new Date().toISOString().split("T")[0]}.xlsx`);
   }
 
-  $: (period, fetchTopProducts());
+  function formatDate(iso) {
+    if (!iso) return "—";
+    return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  }
+
+  $: period, fetchTopProducts();
   $: maxPeak = peakHours.length > 0 ? Math.max(...peakHours, 1) : 1;
 </script>
 
@@ -152,6 +210,66 @@
         <option value="week">This Week</option>
         <option value="month">This Month</option>
       </select>
+    </div>
+
+    <!-- 🔧 NEW: Recent Price Changes -->
+    <div class="card">
+      <h3>
+        <Bell size={18} strokeWidth={2} />
+        Recent Price Changes (Last 30 Days)
+      </h3>
+      {#if priceChangesLoading}
+        <p class="loading-text">Loading...</p>
+      {:else if recentPriceChanges.length === 0}
+        <p class="empty-text">No price changes in the last 30 days.</p>
+      {:else}
+        <div class="price-changes-list">
+          {#each recentPriceChanges as entry}
+            <div class="price-change-item">
+              <div class="product-header">
+                <strong>{entry.product.name}</strong>
+                <span class="current-margin">
+                  Current margin:
+                  {entry.product.current_margin_percent != null
+                    ? `${entry.product.current_margin_percent.toFixed(1)}%`
+                    : "—"}
+                </span>
+              </div>
+              <div class="changes-list">
+                {#each entry.changes as change}
+                  <div class="change-line">
+                    <span class="change-type {change.price_type}">
+                      {change.price_type === "purchase" ? "COST" : "SELL"}
+                    </span>
+                    <span class="change-values">
+                      {#if change.old_price === null || change.old_price === 0}
+                        Set to MWK {change.new_price?.toLocaleString()}
+                      {:else}
+                        MWK {change.old_price?.toLocaleString()} →
+                        MWK {change.new_price?.toLocaleString()}
+                      {/if}
+                    </span>
+                    {#if change.change_percent !== null}
+                      {#if change.change_percent > 0}
+                        <span class="pct up">
+                          <TrendingUp size={11} /> +{change.change_percent}%
+                        </span>
+                      {:else if change.change_percent < 0}
+                        <span class="pct down">
+                          <TrendingDown size={11} /> {change.change_percent}%
+                        </span>
+                      {:else}
+                        <span class="pct flat"><Minus size={11} /> 0%</span>
+                      {/if}
+                    {/if}
+                    <span class="change-date">{formatDate(change.changed_at)}</span>
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
     </div>
 
     <!-- Top Products -->
@@ -431,7 +549,108 @@
     color: var(--text-light, #6b7280);
   }
 
-  /* ====== PEAK CHART — no horizontal scroll ====== */
+  /* ====== RECENT PRICE CHANGES ====== */
+  .price-changes-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.65rem;
+  }
+
+  .price-change-item {
+    padding: 0.75rem;
+    background: var(--background, #f9fafb);
+    border-radius: 8px;
+    border: 1px solid var(--border, #e5e7eb);
+  }
+
+  .product-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+
+  .product-header strong {
+    font-size: 0.95rem;
+    color: var(--text, #111827);
+  }
+
+  .current-margin {
+    font-size: 0.78rem;
+    color: var(--text-light, #6b7280);
+  }
+
+  .changes-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .change-line {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    font-size: 0.82rem;
+  }
+
+  .change-type {
+    font-size: 0.62rem;
+    font-weight: 700;
+    padding: 0.1rem 0.35rem;
+    border-radius: 3px;
+    letter-spacing: 0.3px;
+  }
+
+  .change-type.selling {
+    background: #dbeafe;
+    color: #1e40af;
+  }
+
+  .change-type.purchase {
+    background: #fef3c7;
+    color: #92400e;
+  }
+
+  .change-values {
+    color: var(--text, #111827);
+    font-weight: 500;
+  }
+
+  .pct {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.1rem;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.1rem 0.35rem;
+    border-radius: 20px;
+  }
+
+  .pct.up {
+    background: #dcfce7;
+    color: #166534;
+  }
+
+  .pct.down {
+    background: #fee2e2;
+    color: #991b1b;
+  }
+
+  .pct.flat {
+    background: var(--surface, #fff);
+    color: var(--text-light, #6b7280);
+  }
+
+  .change-date {
+    margin-left: auto;
+    font-size: 0.72rem;
+    color: var(--text-light, #6b7280);
+  }
+
+  /* ====== PEAK CHART ====== */
   .peak-chart-wrapper {
     width: 100%;
     overflow: hidden;

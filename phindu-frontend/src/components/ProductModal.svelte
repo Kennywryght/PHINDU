@@ -1,7 +1,8 @@
 <script>
   import { createEventDispatcher, onMount } from "svelte";
-  import { X, Package } from "lucide-svelte";
+  import { X, Package, TrendingUp } from "lucide-svelte";
   import API from "../api/api";
+  import PriceHistoryModal from "./PriceHistoryModal.svelte";
 
   export let product = null;
   const dispatch = createEventDispatcher();
@@ -9,6 +10,7 @@
   let parents = [];
   let loadingParents = true;
   let isVariantMode = false;
+  let showHistoryModal = false;
 
   let form = {
     name: "",
@@ -39,7 +41,6 @@
 
   onMount(async () => {
     try {
-      // Load parent candidates: top-level products only, exclude self
       const res = await API.get("/products/?parents_only=true");
       parents = res.data.filter((p) => !product || p.id !== product.id);
     } catch (err) {
@@ -51,11 +52,9 @@
 
   function handleSubmit() {
     const payload = { ...form };
-    // Parent products: strip prices to 0
     if (!payload.parent_id) {
-      // It's a parent or standalone — keep prices as entered
+      // Parent or standalone
     } else {
-      // It's a variant — parent_id required, prices required
       if (!payload.selling_price || payload.selling_price <= 0) {
         alert("Variant requires a selling price > 0");
         return;
@@ -70,7 +69,7 @@
   }
 
   function handleKeydown(e) {
-    if (e.key === "Escape") close();
+    if (e.key === "Escape" && !showHistoryModal) close();
   }
 
   function toggleVariantMode() {
@@ -78,6 +77,14 @@
     if (!isVariantMode) {
       form.parent_id = null;
     }
+  }
+
+  function openHistory() {
+    showHistoryModal = true;
+  }
+
+  function closeHistory() {
+    showHistoryModal = false;
   }
 </script>
 
@@ -123,7 +130,7 @@
           {#if loadingParents}
             <p class="hint">Loading parents...</p>
           {:else if parents.length === 0}
-            <p class="hint">No parent products yet. Create a parent first (uncheck the variant box).</p>
+            <p class="hint">No parent products yet. Create a parent first.</p>
           {:else}
             <select id="p-parent" bind:value={form.parent_id} required>
               <option value={null}>-- Select parent --</option>
@@ -190,14 +197,21 @@
 
         <div class="form-group">
           <label for="p-threshold">Low Stock Alert At</label>
-          <input
-            id="p-threshold"
-            type="number"
-            min="0"
-            bind:value={form.low_stock_threshold}
-          />
+          <input id="p-threshold" type="number" min="0" bind:value={form.low_stock_threshold} />
         </div>
       </div>
+
+      <!-- 🔧 NEW: Price History button (only for existing products) -->
+      {#if product}
+        <button
+          type="button"
+          class="history-btn"
+          on:click={openHistory}
+        >
+          <TrendingUp size={16} strokeWidth={2} />
+          View Price History
+        </button>
+      {/if}
 
       <div class="modal-actions">
         <button type="button" class="btn btn-secondary" on:click={close}>Cancel</button>
@@ -206,6 +220,13 @@
     </form>
   </div>
 </div>
+
+{#if showHistoryModal && product}
+  <PriceHistoryModal
+    productId={product.id}
+    on:close={closeHistory}
+  />
+{/if}
 
 <style>
   .modal-overlay {
@@ -335,6 +356,29 @@
     outline: none;
     border-color: var(--primary, #0f6b3e);
     box-shadow: 0 0 0 3px rgba(15, 107, 62, 0.1);
+  }
+
+  .history-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    width: 100%;
+    justify-content: center;
+    padding: 0.6rem;
+    margin-bottom: 1rem;
+    background: var(--background, #f9fafb);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.88rem;
+    font-weight: 500;
+    color: var(--primary, #0f6b3e);
+    transition: all 0.15s;
+  }
+
+  .history-btn:hover {
+    background: var(--surface, #fff);
+    border-color: var(--primary, #0f6b3e);
   }
 
   .modal-actions {
