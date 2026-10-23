@@ -1,8 +1,8 @@
-"""add payments table and session cash tracking fields
+"""initial schema
 
-Revision ID: 075f2bda7e9f
-Revises: 9c8e95c1aeb4
-Create Date: 2026-10-21 18:55:44.300024
+Revision ID: 362c303178ac
+Revises: 
+Create Date: 2026-10-23 10:42:26.395850
 
 """
 from typing import Sequence, Union
@@ -12,8 +12,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '075f2bda7e9f'
-down_revision: Union[str, None] = '9c8e95c1aeb4'
+revision: str = '362c303178ac'
+down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
