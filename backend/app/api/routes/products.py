@@ -2,17 +2,23 @@
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_shop_id
-from app.api.deps import require_role  # 🔧 Fix 2.5
+from app.api.deps import require_role
 from app.db.models.price_history import PriceHistory
 from app.db.models.product import Product
 from app.db.models.sale import SaleItem
 from app.db.models.stock import StockBatch
 from app.db.session import SessionLocal
-from app.schemas.product import ProductCreate, ProductOut, ProductUpdate
+from app.schemas.product import (
+    ProductCreate,
+    ProductOut,
+    ProductUpdate,
+    VariantSummary,
+)
 
 router = APIRouter(prefix="/products", tags=["Products"])
 
@@ -26,29 +32,88 @@ def get_db():
         db.close()
 
 
+def _product_to_out(product: Product, variant_count: int = 0) -> dict:
+    """Convert a Product ORM object to a dict matching ProductOut."""
+    return {
+        "id": product.id,
+        "shop_id": product.shop_id,
+        "name": product.name,
+        "category": product.category,
+        "type": product.type,
+        "unit": product.unit,
+        "selling_price": product.selling_price or 0,
+        "purchase_price": product.purchase_price or 0,
+        "stock_qty": product.stock_qty or 0,
+        "archived": product.archived or False,
+        "is_deleted": product.is_deleted or False,
+        "parent_id": product.parent_id,
+        "low_stock_threshold": product.low_stock_threshold or 5,
+        "is_parent": variant_count > 0,
+        "variant_count": variant_count,
+    }
+
+
+def _variant_count_for(db: Session, product_id: str, shop_id: str) -> int:
+    """Count variants of this product."""
+    return (
+        db.query(func.count(Product.id))
+        .filter(
+            Product.parent_id == product_id,
+            Product.shop_id == shop_id,
+            Product.is_deleted == False,
+        )
+        .scalar()
+        or 0
+    )
+
+
 @router.post("/", response_model=ProductOut)
 def create_product(
     product: ProductCreate,
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
+    """Create a new product or variant.
+
+    - If `parent_id` is provided, this product becomes a variant.
+    - If `parent_id` is null, this product is a top-level product or parent.
+    - Parent products should have selling_price=0, purchase_price=0, stock_qty=0.
+    """
+    # Validate parent
+    if product.parent_id:
+        parent = (
+            db.query(Product)
+            .filter(Product.id == product.parent_id, Product.shop_id == shop_id)
+            .first()
+        )
+        if not parent:
+            raise HTTPException(status_code=404, detail="Parent product not found")
+        if parent.parent_id is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot nest variants — parent must be a top-level product",
+            )
+        if parent.is_deleted:
+            raise HTTPException(status_code=400, detail="Cannot add variant to deleted product")
+
     new_product = Product(
         shop_id=shop_id,
         name=product.name,
         category=product.category,
         type=product.type,
         unit=product.unit,
-        selling_price=product.selling_price,
-        purchase_price=product.purchase_price,
-        stock_qty=product.stock_qty,
+        selling_price=product.selling_price or 0,
+        purchase_price=product.purchase_price or 0,
+        stock_qty=product.stock_qty or 0,
         parent_id=product.parent_id,
+        low_stock_threshold=product.low_stock_threshold or 5,
     )
 
     db.add(new_product)
     db.commit()
     db.refresh(new_product)
 
-    # Only create a batch if there's actual stock
+    # Only create batch if actual stock
     if new_product.stock_qty and new_product.stock_qty > 0:
         batch = StockBatch(
             shop_id=shop_id,
@@ -59,47 +124,118 @@ def create_product(
         db.add(batch)
         db.commit()
 
-    # Seed initial price history
-    initial_history = PriceHistory(
-        product_id=new_product.id,
-        old_price=None,
-        new_price=new_product.selling_price,
-    )
-    db.add(initial_history)
-    db.commit()
+    # Seed initial price history only if selling_price > 0
+    if new_product.selling_price and new_product.selling_price > 0:
+        initial_history = PriceHistory(
+            product_id=new_product.id,
+            old_price=None,
+            new_price=new_product.selling_price,
+        )
+        db.add(initial_history)
+        db.commit()
 
-    return new_product
+    return _product_to_out(new_product)
 
 
 @router.get("/", response_model=list[ProductOut])
 def get_products(
     include_deleted: bool = False,
+    parents_only: bool = Query(False, description="Only return top-level products (no variants)"),
+    include_archived: bool = Query(True, description="Include archived products"),
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
+    """List products for the current shop."""
     query = db.query(Product).filter(Product.shop_id == shop_id)
+
     if not include_deleted:
         query = query.filter(Product.is_deleted == False)
-    return query.all()
+    if not include_archived:
+        query = query.filter(Product.archived == False)
+    if parents_only:
+        query = query.filter(Product.parent_id.is_(None))
+
+    products = query.order_by(Product.name).all()
+
+    result = []
+    for p in products:
+        vc = _variant_count_for(db, p.id, shop_id)
+        result.append(_product_to_out(p, variant_count=vc))
+    return result
+
+
+@router.get("/{product_id}", response_model=ProductOut)
+def get_product(
+    product_id: str,
+    db: Session = Depends(get_db),
+    shop_id: str = Depends(get_current_shop_id),
+):
+    """Get a single product by ID."""
+    product = (
+        db.query(Product)
+        .filter(Product.id == product_id, Product.shop_id == shop_id)
+        .first()
+    )
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    vc = _variant_count_for(db, product_id, shop_id)
+    return _product_to_out(product, variant_count=vc)
+
+
+@router.get("/{parent_id}/variants", response_model=list[VariantSummary])
+def get_variants(
+    parent_id: str,
+    db: Session = Depends(get_db),
+    shop_id: str = Depends(get_current_shop_id),
+):
+    """List all variants of a parent product."""
+    parent = (
+        db.query(Product)
+        .filter(Product.id == parent_id, Product.shop_id == shop_id)
+        .first()
+    )
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent product not found")
+
+    variants = (
+        db.query(Product)
+        .filter(
+            Product.parent_id == parent_id,
+            Product.shop_id == shop_id,
+            Product.is_deleted == False,
+            Product.archived == False,
+        )
+        .order_by(Product.name)
+        .all()
+    )
+    return variants
 
 
 @router.delete(
     "/{product_id}",
-    dependencies=[Depends(require_role("owner"))],  # 🔧 Fix 2.5
+    dependencies=[Depends(require_role("owner"))],
 )
 def delete_product(
     product_id: str,
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """Delete a product, soft delete if it has sales, hard delete otherwise.
-
-    Requires owner role — destructive operation.
-    """
-    product = db.query(Product).filter(Product.id == product_id, Product.shop_id == shop_id).first()
-
+    """Delete a product. Blocks if it has active variants (must delete them first)."""
+    product = (
+        db.query(Product)
+        .filter(Product.id == product_id, Product.shop_id == shop_id)
+        .first()
+    )
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
+
+    # Block deletion if this is a parent with active variants
+    variant_count = _variant_count_for(db, product_id, shop_id)
+    if variant_count > 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"This product has {variant_count} variant(s). Delete variants first.",
+        )
 
     sale_exists = db.query(SaleItem).filter(SaleItem.product_id == product_id).first()
 
@@ -120,28 +256,31 @@ def update_product(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """Update product fields and handle stock changes."""
-    product = db.query(Product).filter(Product.id == product_id, Product.shop_id == shop_id).first()
-
+    """Update product fields."""
+    product = (
+        db.query(Product)
+        .filter(Product.id == product_id, Product.shop_id == shop_id)
+        .first()
+    )
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
     update_data = product_update.model_dump(exclude_unset=True)
 
-    # Log selling price changes
-    if "selling_price" in update_data:
-        history = PriceHistory(
-            product_id=product.id,
-            old_price=product.selling_price,
-            new_price=update_data["selling_price"],
-        )
-        db.add(history)
+    if "selling_price" in update_data and update_data["selling_price"] is not None:
+        if update_data["selling_price"] != product.selling_price:
+            history = PriceHistory(
+                product_id=product.id,
+                old_price=product.selling_price,
+                new_price=update_data["selling_price"],
+            )
+            db.add(history)
 
-    # Handle stock increase → create a batch
-    if "stock_qty" in update_data:
+    if "stock_qty" in update_data and update_data["stock_qty"] is not None:
         new_stock = update_data["stock_qty"]
-        if new_stock > product.stock_qty:
-            added_qty = new_stock - product.stock_qty
+        current_stock = product.stock_qty or 0
+        if new_stock > current_stock:
+            added_qty = new_stock - current_stock
             batch = StockBatch(
                 shop_id=shop_id,
                 product_id=product.id,
@@ -152,13 +291,15 @@ def update_product(
         product.stock_qty = new_stock
 
     for field, value in update_data.items():
-        if field != "stock_qty":
+        if field not in ("stock_qty", "selling_price"):
             setattr(product, field, value)
+        elif field == "selling_price":
+            product.selling_price = value
 
     db.commit()
     db.refresh(product)
-
-    return product
+    vc = _variant_count_for(db, product_id, shop_id)
+    return _product_to_out(product, variant_count=vc)
 
 
 @router.put("/restore/{product_id}")
@@ -167,8 +308,11 @@ def restore_product(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """Restore a soft-deleted product."""
-    product = db.query(Product).filter(Product.id == product_id, Product.shop_id == shop_id).first()
+    product = (
+        db.query(Product)
+        .filter(Product.id == product_id, Product.shop_id == shop_id)
+        .first()
+    )
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     product.is_deleted = False
@@ -182,8 +326,11 @@ def archive_product(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """Archive a product so it is hidden from normal listings."""
-    product = db.query(Product).filter(Product.id == product_id, Product.shop_id == shop_id).first()
+    product = (
+        db.query(Product)
+        .filter(Product.id == product_id, Product.shop_id == shop_id)
+        .first()
+    )
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     product.archived = True
@@ -197,7 +344,11 @@ def unarchive_product(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    product = db.query(Product).filter(Product.id == product_id, Product.shop_id == shop_id).first()
+    product = (
+        db.query(Product)
+        .filter(Product.id == product_id, Product.shop_id == shop_id)
+        .first()
+    )
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     product.archived = False

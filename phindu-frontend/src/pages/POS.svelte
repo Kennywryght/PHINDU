@@ -1,6 +1,6 @@
 <script>
   import { onMount } from "svelte";
-  import { Search, Plus, UserPlus, ShoppingCart, PackageX, CheckCircle2 } from "lucide-svelte";
+  import { Search, UserPlus, ShoppingCart, PackageX, CheckCircle2, Layers } from "lucide-svelte";
   import Layout from "../components/Layout.svelte";
   import CartItem from "../components/CartItem.svelte";
   import API from "../api/api";
@@ -18,18 +18,61 @@
 
   let checkoutSuccess = false;
 
+  // Variant picker modal
+  let showVariantPicker = false;
+  let variantParent = null;
+  let variantList = [];
+  let loadingVariants = false;
+
   onMount(async () => {
     const [productsRes, customersRes] = await Promise.all([
       API.get("/products/"),
       API.get("/customers/"),
     ]);
-    products = productsRes.data.filter((p) => !p.archived && p.stock_qty > 0);
+    products = productsRes.data.filter((p) => !p.archived && !p.is_deleted);
     customers = customersRes.data;
   });
 
   $: filteredProducts = products.filter((p) =>
     p.name.toLowerCase().includes(searchTerm.toLowerCase())
   );
+
+  function handleProductClick(product) {
+    if (product.is_parent && product.variant_count > 0) {
+      openVariantPicker(product);
+    } else if (product.stock_qty > 0) {
+      addToCart(product);
+    }
+  }
+
+  async function openVariantPicker(parent) {
+    variantParent = parent;
+    showVariantPicker = true;
+    loadingVariants = true;
+    try {
+      const res = await API.get(`/products/${parent.id}/variants`);
+      variantList = res.data.filter((v) => v.stock_qty > 0);
+    } catch (err) {
+      console.error("Failed to load variants", err);
+      variantList = [];
+    } finally {
+      loadingVariants = false;
+    }
+  }
+
+  function selectVariant(variant) {
+    const fullVariant = products.find((p) => p.id === variant.id);
+    if (fullVariant) {
+      addToCart(fullVariant);
+    }
+    showVariantPicker = false;
+    variantParent = null;
+  }
+
+  function closeVariantPicker() {
+    showVariantPicker = false;
+    variantParent = null;
+  }
 
   function addToCart(product) {
     const existing = cart.find((item) => item.id === product.id);
@@ -73,7 +116,7 @@
       cart = [];
       isCreditSale = false;
       selectedCustomerId = null;
-    } catch {
+    } catch (err) {
       alert("Checkout failed: " + (err.response?.data?.detail || "Unknown error"));
     } finally {
       loading = false;
@@ -100,10 +143,11 @@
 
 <Layout title="Point of Sale">
   <div class="pos-container">
-    <!-- PRODUCTS -->
     <div class="product-section">
       <div class="search-bar">
-        <Search size={18} strokeWidth={2} class="search-icon" />
+        <span class="search-icon-wrap">
+          <Search size={18} strokeWidth={2} />
+        </span>
         <input type="text" placeholder="Search products..." bind:value={searchTerm} />
       </div>
 
@@ -115,17 +159,35 @@
       {:else}
         <div class="product-grid">
           {#each filteredProducts as product}
-            <button class="product-card" on:click={() => addToCart(product)} type="button">
-              <div class="product-name">{product.name}</div>
-              <div class="product-price">MWK {product.selling_price?.toLocaleString()}</div>
-              <div class="product-stock">Stock: {product.stock_qty}</div>
+            {@const isParentWithVariants = product.is_parent && product.variant_count > 0}
+            {@const isOutOfStock = !isParentWithVariants && product.stock_qty <= 0}
+            <button
+              class="product-card"
+              class:parent-card={isParentWithVariants}
+              class:out-of-stock={isOutOfStock}
+              on:click={() => handleProductClick(product)}
+              disabled={isOutOfStock}
+              type="button"
+            >
+              <div class="product-name">
+                {#if isParentWithVariants}
+                  <Layers size={12} strokeWidth={2.5} class="layer-icon" />
+                {/if}
+                {product.name}
+              </div>
+              {#if isParentWithVariants}
+                <div class="product-price">{product.variant_count} variants</div>
+                <div class="product-stock">Tap to choose</div>
+              {:else}
+                <div class="product-price">MWK {product.selling_price?.toLocaleString()}</div>
+                <div class="product-stock">Stock: {product.stock_qty}</div>
+              {/if}
             </button>
           {/each}
         </div>
       {/if}
     </div>
 
-    <!-- CART -->
     <div class="cart-section">
       <div class="cart-header">
         <h2>
@@ -199,6 +261,51 @@
     </div>
   </div>
 
+  <!-- VARIANT PICKER MODAL -->
+  {#if showVariantPicker}
+    <div
+      class="modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      tabindex="-1"
+      on:click|self={closeVariantPicker}
+      on:keydown={(e) => e.key === "Escape" && closeVariantPicker()}
+    >
+      <div class="modal">
+        <h3>
+          <Layers size={18} strokeWidth={2} />
+          Choose {variantParent?.name} Variant
+        </h3>
+        {#if loadingVariants}
+          <p class="picker-hint">Loading variants...</p>
+        {:else if variantList.length === 0}
+          <p class="picker-hint">No variants in stock. Restock first.</p>
+        {:else}
+          <div class="variant-options">
+            {#each variantList as variant}
+              <button
+                class="variant-option"
+                on:click={() => selectVariant(variant)}
+                type="button"
+              >
+                <div class="variant-info">
+                  <div class="variant-name">{variant.name}</div>
+                  <div class="variant-meta">Stock: {variant.stock_qty} {variant.unit}</div>
+                </div>
+                <div class="variant-price">MWK {variant.selling_price?.toLocaleString()}</div>
+              </button>
+            {/each}
+          </div>
+        {/if}
+        <div class="modal-actions">
+          <button class="btn btn-secondary" on:click={closeVariantPicker} type="button">
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
   <!-- NEW CUSTOMER MODAL -->
   {#if showNewCustomerModal}
     <div
@@ -207,6 +314,7 @@
       aria-modal="true"
       tabindex="-1"
       on:click|self={closeCustomerModal}
+      on:keydown={(e) => e.key === "Escape" && closeCustomerModal()}
     >
       <div class="modal">
         <h3>Add New Customer</h3>
@@ -227,9 +335,7 @@
           <input id="cust-address" type="text" bind:value={newCustomer.address} />
         </div>
         <div class="modal-actions">
-          <button class="btn btn-secondary" on:click={closeCustomerModal} type="button"
-            >Cancel</button
-          >
+          <button class="btn btn-secondary" on:click={closeCustomerModal} type="button">Cancel</button>
           <button
             class="btn btn-primary"
             on:click={createCustomer}
@@ -253,7 +359,6 @@
     min-height: 500px;
   }
 
-  /* ============ PRODUCTS ============ */
   .product-section {
     display: flex;
     flex-direction: column;
@@ -265,6 +370,17 @@
     position: relative;
     margin-bottom: 1rem;
     flex-shrink: 0;
+  }
+
+  .search-icon-wrap {
+    position: absolute;
+    left: 1rem;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-light, #6b7280);
+    pointer-events: none;
+    display: inline-flex;
+    align-items: center;
   }
 
   .search-bar input {
@@ -308,14 +424,19 @@
     gap: 0.35rem;
   }
 
-  .product-card:hover {
+  .product-card:hover:not(:disabled) {
     border-color: var(--primary, #0f6b3e);
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
     transform: translateY(-1px);
   }
 
-  .product-card:active {
-    transform: translateY(0);
+  .parent-card {
+    border-left: 3px solid var(--primary, #0f6b3e);
+  }
+
+  .out-of-stock {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   .product-name {
@@ -327,6 +448,14 @@
     display: -webkit-box;
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+
+  .layer-icon {
+    color: var(--primary, #0f6b3e);
+    flex-shrink: 0;
   }
 
   .product-price {
@@ -351,7 +480,6 @@
     gap: 0.75rem;
   }
 
-  /* ============ CART ============ */
   .cart-section {
     display: flex;
     flex-direction: column;
@@ -498,7 +626,6 @@
     }
   }
 
-  /* ============ MODAL ============ */
   .modal-overlay {
     position: fixed;
     inset: 0;
@@ -514,10 +641,77 @@
     background: var(--surface, #fff);
     border-radius: 12px;
     padding: 1.5rem;
-    max-width: 400px;
+    max-width: 500px;
     width: 100%;
     max-height: 90vh;
     overflow-y: auto;
+  }
+
+  .modal h3 {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0;
+    margin-bottom: 1rem;
+    font-size: 1.05rem;
+    color: var(--text, #111827);
+  }
+
+  .picker-hint {
+    text-align: center;
+    color: var(--text-light, #6b7280);
+    padding: 1.5rem;
+    font-size: 0.9rem;
+  }
+
+  .variant-options {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+  }
+
+  .variant-option {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.85rem 1rem;
+    background: var(--background, #f9fafb);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 10px;
+    cursor: pointer;
+    text-align: left;
+    transition: all 0.15s;
+    width: 100%;
+    gap: 1rem;
+  }
+
+  .variant-option:hover {
+    border-color: var(--primary, #0f6b3e);
+    background: var(--surface, #fff);
+  }
+
+  .variant-info {
+    flex: 1;
+  }
+
+  .variant-name {
+    font-weight: 600;
+    font-size: 0.95rem;
+    color: var(--text, #111827);
+  }
+
+  .variant-meta {
+    font-size: 0.78rem;
+    color: var(--text-light, #6b7280);
+    margin-top: 0.15rem;
+  }
+
+  .variant-price {
+    font-weight: 700;
+    color: var(--primary, #0f6b3e);
+    font-size: 0.95rem;
+    flex-shrink: 0;
   }
 
   .form-group {
@@ -604,14 +798,12 @@
     font-size: 0.85rem;
   }
 
-  /* ============ TABLET ============ */
   @media (max-width: 1024px) {
     .pos-container {
       grid-template-columns: 1fr 320px;
     }
   }
 
-  /* ============ MOBILE ============ */
   @media (max-width: 768px) {
     .pos-container {
       grid-template-columns: 1fr;
@@ -633,7 +825,6 @@
     }
   }
 
-  /* ============ SMALL MOBILE ============ */
   @media (max-width: 480px) {
     .product-grid {
       grid-template-columns: repeat(2, 1fr);

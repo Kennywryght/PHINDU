@@ -1,15 +1,28 @@
 <script>
   import { onMount } from "svelte";
-  import { Plus, Pencil, Trash2, Archive, RotateCcw, PackageX } from "lucide-svelte";
+  import {
+    Plus,
+    Pencil,
+    Trash2,
+    Archive,
+    RotateCcw,
+    PackageX,
+    ChevronDown,
+    ChevronRight,
+    Layers,
+  } from "lucide-svelte";
   import Layout from "../components/Layout.svelte";
   import ProductModal from "../components/ProductModal.svelte";
   import API from "../api/api";
 
-  let products = [];
+  let products = []; // flat list from API
+  let variantsByParent = {}; // { parent_id: [variants] }
+  let grouped = []; // [{parent, variants: []}]
+  let expanded = {}; // { parent_id: bool }
   let loading = true;
   let showModal = false;
   let editingProduct = null;
-  let filter = "all"; // all, active, archived, deleted
+  let filter = "all";
 
   onMount(fetchProducts);
 
@@ -22,6 +35,8 @@
       }
       const res = await API.get(url);
       let filtered = res.data;
+
+      // Client-side filter
       if (filter === "active") {
         filtered = filtered.filter((p) => !p.archived && !p.is_deleted);
       } else if (filter === "archived") {
@@ -31,15 +46,42 @@
       } else {
         filtered = filtered.filter((p) => !p.is_deleted);
       }
+
       products = filtered;
-    } catch {
+      buildGroups();
+    } catch (err) {
       console.error("Failed to fetch products", err);
     } finally {
       loading = false;
     }
   }
 
-  $: (filter, fetchProducts());
+  function buildGroups() {
+    const byId = {};
+    products.forEach((p) => (byId[p.id] = p));
+
+    const byParent = {};
+    const tops = [];
+    products.forEach((p) => {
+      if (p.parent_id && byId[p.parent_id]) {
+        if (!byParent[p.parent_id]) byParent[p.parent_id] = [];
+        byParent[p.parent_id].push(p);
+      } else {
+        tops.push(p);
+      }
+    });
+
+    grouped = tops.map((p) => ({
+      parent: p,
+      variants: byParent[p.id] || [],
+    }));
+  }
+
+  function toggleExpand(id) {
+    expanded[id] = !expanded[id];
+  }
+
+  $: filter, fetchProducts();
 
   async function handleSave(productData) {
     try {
@@ -50,8 +92,8 @@
       }
       await fetchProducts();
       closeModal();
-    } catch {
-      alert("Failed to save product");
+    } catch (err) {
+      alert("Failed to save product: " + (err.response?.data?.detail || "Unknown error"));
     }
   }
 
@@ -60,8 +102,8 @@
     try {
       await API.delete(`/products/${id}`);
       fetchProducts();
-    } catch {
-      alert("Delete failed");
+    } catch (err) {
+      alert("Delete failed: " + (err.response?.data?.detail || "Unknown error"));
     }
   }
 
@@ -69,7 +111,7 @@
     try {
       await API.put(`/products/archive/${id}`);
       fetchProducts();
-    } catch {
+    } catch (err) {
       alert("Archive failed");
     }
   }
@@ -78,7 +120,7 @@
     try {
       await API.put(`/products/unarchive/${id}`);
       fetchProducts();
-    } catch {
+    } catch (err) {
       alert("Unarchive failed");
     }
   }
@@ -87,7 +129,7 @@
     try {
       await API.put(`/products/restore/${id}`);
       fetchProducts();
-    } catch {
+    } catch (err) {
       alert("Restore failed");
     }
   }
@@ -131,7 +173,7 @@
 
   {#if loading}
     <p class="loading-text">Loading products...</p>
-  {:else if products.length === 0}
+  {:else if grouped.length === 0}
     <div class="empty-state">
       <PackageX size={48} strokeWidth={1.25} />
       <p>No products in this category</p>
@@ -155,27 +197,64 @@
             </tr>
           </thead>
           <tbody>
-            {#each products as product}
-              <tr>
-                <td data-label="Name"><strong>{product.name}</strong></td>
-                <td data-label="Category">{product.category || "—"}</td>
-                <td data-label="Price">MWK {product.selling_price?.toLocaleString()}</td>
-                <td data-label="Stock">{product.stock_qty}</td>
+            {#each grouped as group}
+              <!-- Parent row -->
+              <tr class:parent-row={group.variants.length > 0}>
+                <td data-label="Name">
+                  <div class="name-cell">
+                    {#if group.variants.length > 0}
+                      <button
+                        class="expand-btn"
+                        on:click={() => toggleExpand(group.parent.id)}
+                        type="button"
+                        aria-label="Toggle variants"
+                      >
+                        {#if expanded[group.parent.id]}
+                          <ChevronDown size={16} />
+                        {:else}
+                          <ChevronRight size={16} />
+                        {/if}
+                      </button>
+                    {/if}
+                    <strong>{group.parent.name}</strong>
+                    {#if group.variants.length > 0}
+                      <span class="variant-badge">
+                        <Layers size={11} strokeWidth={2} />
+                        {group.variants.length}
+                      </span>
+                    {/if}
+                  </div>
+                </td>
+                <td data-label="Category">{group.parent.category || "—"}</td>
+                <td data-label="Price">
+                  {#if group.variants.length > 0}
+                    <span class="muted">—</span>
+                  {:else}
+                    MWK {group.parent.selling_price?.toLocaleString()}
+                  {/if}
+                </td>
+                <td data-label="Stock">
+                  {#if group.variants.length > 0}
+                    <span class="muted">—</span>
+                  {:else}
+                    {group.parent.stock_qty}
+                  {/if}
+                </td>
                 <td data-label="Status">
                   <span
                     class="status"
-                    class:archived={product.archived}
-                    class:deleted={product.is_deleted}
+                    class:archived={group.parent.archived}
+                    class:deleted={group.parent.is_deleted}
                   >
-                    {#if product.is_deleted}Deleted{:else if product.archived}Archived{:else}Active{/if}
+                    {#if group.parent.is_deleted}Deleted{:else if group.parent.archived}Archived{:else}Active{/if}
                   </span>
                 </td>
                 <td data-label="Actions">
                   <div class="actions">
-                    {#if product.is_deleted}
+                    {#if group.parent.is_deleted}
                       <button
                         class="action-btn"
-                        on:click={() => handleRestore(product.id)}
+                        on:click={() => handleRestore(group.parent.id)}
                         title="Restore"
                         type="button"
                       >
@@ -184,16 +263,16 @@
                     {:else}
                       <button
                         class="action-btn"
-                        on:click={() => openModal(product)}
+                        on:click={() => openModal(group.parent)}
                         title="Edit"
                         type="button"
                       >
                         <Pencil size={16} strokeWidth={2} />
                       </button>
-                      {#if product.archived}
+                      {#if group.parent.archived}
                         <button
                           class="action-btn"
-                          on:click={() => handleUnarchive(product.id)}
+                          on:click={() => handleUnarchive(group.parent.id)}
                           title="Unarchive"
                           type="button"
                         >
@@ -202,7 +281,7 @@
                       {:else}
                         <button
                           class="action-btn"
-                          on:click={() => handleArchive(product.id)}
+                          on:click={() => handleArchive(group.parent.id)}
                           title="Archive"
                           type="button"
                         >
@@ -211,7 +290,7 @@
                       {/if}
                       <button
                         class="action-btn danger"
-                        on:click={() => handleDelete(product.id)}
+                        on:click={() => handleDelete(group.parent.id)}
                         title="Delete"
                         type="button"
                       >
@@ -221,6 +300,52 @@
                   </div>
                 </td>
               </tr>
+
+              <!-- Variant rows (shown when expanded) -->
+              {#if expanded[group.parent.id]}
+                {#each group.variants as variant}
+                  <tr class="variant-row">
+                    <td data-label="Name">
+                      <div class="name-cell variant-name">
+                        <span class="variant-indent">↳</span>
+                        {variant.name}
+                      </div>
+                    </td>
+                    <td data-label="Category">{variant.category || "—"}</td>
+                    <td data-label="Price">MWK {variant.selling_price?.toLocaleString()}</td>
+                    <td data-label="Stock">{variant.stock_qty}</td>
+                    <td data-label="Status">
+                      <span
+                        class="status"
+                        class:archived={variant.archived}
+                        class:deleted={variant.is_deleted}
+                      >
+                        {#if variant.is_deleted}Deleted{:else if variant.archived}Archived{:else}Active{/if}
+                      </span>
+                    </td>
+                    <td data-label="Actions">
+                      <div class="actions">
+                        <button
+                          class="action-btn"
+                          on:click={() => openModal(variant)}
+                          title="Edit"
+                          type="button"
+                        >
+                          <Pencil size={16} strokeWidth={2} />
+                        </button>
+                        <button
+                          class="action-btn danger"
+                          on:click={() => handleDelete(variant.id)}
+                          title="Delete"
+                          type="button"
+                        >
+                          <Trash2 size={16} strokeWidth={2} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                {/each}
+              {/if}
             {/each}
           </tbody>
         </table>
@@ -228,42 +353,100 @@
 
       <!-- Mobile Cards -->
       <div class="mobile-cards">
-        {#each products as product}
+        {#each grouped as group}
           <div class="product-card">
             <div class="card-header">
-              <h3>{product.name}</h3>
+              <div class="name-cell">
+                <h3>{group.parent.name}</h3>
+                {#if group.variants.length > 0}
+                  <span class="variant-badge">
+                    <Layers size={11} strokeWidth={2} />
+                    {group.variants.length}
+                  </span>
+                {/if}
+              </div>
               <span
                 class="status"
-                class:archived={product.archived}
-                class:deleted={product.is_deleted}
+                class:archived={group.parent.archived}
+                class:deleted={group.parent.is_deleted}
               >
-                {#if product.is_deleted}Deleted{:else if product.archived}Archived{:else}Active{/if}
+                {#if group.parent.is_deleted}Deleted{:else if group.parent.archived}Archived{:else}Active{/if}
               </span>
             </div>
             <div class="details">
-              <div><span>Category</span><strong>{product.category || "—"}</strong></div>
-              <div>
-                <span>Price</span><strong>MWK {product.selling_price?.toLocaleString()}</strong>
-              </div>
-              <div><span>Stock</span><strong>{product.stock_qty}</strong></div>
+              <div><span>Category</span><strong>{group.parent.category || "—"}</strong></div>
+              {#if group.variants.length === 0}
+                <div>
+                  <span>Price</span><strong>MWK {group.parent.selling_price?.toLocaleString()}</strong>
+                </div>
+                <div><span>Stock</span><strong>{group.parent.stock_qty}</strong></div>
+              {/if}
             </div>
+
+            {#if group.variants.length > 0}
+              <button
+                class="expand-mobile-btn"
+                on:click={() => toggleExpand(group.parent.id)}
+                type="button"
+              >
+                {#if expanded[group.parent.id]}
+                  Hide {group.variants.length} variants
+                {:else}
+                  Show {group.variants.length} variants
+                {/if}
+              </button>
+
+              {#if expanded[group.parent.id]}
+                <div class="variant-list">
+                  {#each group.variants as variant}
+                    <div class="variant-item">
+                      <div>
+                        <div class="variant-name">{variant.name}</div>
+                        <div class="variant-meta">
+                          MWK {variant.selling_price?.toLocaleString()} · Stock {variant.stock_qty}
+                        </div>
+                      </div>
+                      <div class="variant-actions">
+                        <button
+                          class="icon-btn"
+                          on:click={() => openModal(variant)}
+                          type="button"
+                          aria-label="Edit variant"
+                        >
+                          <Pencil size={14} />
+                        </button>
+                        <button
+                          class="icon-btn danger"
+                          on:click={() => handleDelete(variant.id)}
+                          type="button"
+                          aria-label="Delete variant"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+            {/if}
+
             <div class="card-actions">
-              {#if product.is_deleted}
+              {#if group.parent.is_deleted}
                 <button
                   class="action-btn full"
-                  on:click={() => handleRestore(product.id)}
+                  on:click={() => handleRestore(group.parent.id)}
                   type="button"
                 >
                   <RotateCcw size={16} strokeWidth={2} /> Restore
                 </button>
               {:else}
-                <button class="action-btn full" on:click={() => openModal(product)} type="button">
+                <button class="action-btn full" on:click={() => openModal(group.parent)} type="button">
                   <Pencil size={16} strokeWidth={2} /> Edit
                 </button>
-                {#if product.archived}
+                {#if group.parent.archived}
                   <button
                     class="action-btn full"
-                    on:click={() => handleUnarchive(product.id)}
+                    on:click={() => handleUnarchive(group.parent.id)}
                     type="button"
                   >
                     <RotateCcw size={16} strokeWidth={2} /> Unarchive
@@ -271,19 +454,12 @@
                 {:else}
                   <button
                     class="action-btn full"
-                    on:click={() => handleArchive(product.id)}
+                    on:click={() => handleArchive(group.parent.id)}
                     type="button"
                   >
                     <Archive size={16} strokeWidth={2} /> Archive
                   </button>
                 {/if}
-                <button
-                  class="action-btn full danger"
-                  on:click={() => handleDelete(product.id)}
-                  type="button"
-                >
-                  <Trash2 size={16} strokeWidth={2} /> Delete
-                </button>
               {/if}
             </div>
           </div>
@@ -388,6 +564,69 @@
     padding: 0.9rem 1rem;
     border-top: 1px solid var(--border, #e5e7eb);
     color: var(--text, #111827);
+  }
+
+  .parent-row {
+    background: var(--surface, #fff);
+  }
+
+  .variant-row {
+    background: var(--background, #f9fafb);
+    font-size: 0.88rem;
+  }
+
+  .variant-row td {
+    padding-top: 0.65rem;
+    padding-bottom: 0.65rem;
+  }
+
+  .name-cell {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .variant-name {
+    padding-left: 1.5rem;
+  }
+
+  .variant-indent {
+    color: var(--text-light, #6b7280);
+    font-weight: 400;
+  }
+
+  .expand-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0.15rem;
+    color: var(--text-light, #6b7280);
+    display: inline-flex;
+    align-items: center;
+    line-height: 0;
+    border-radius: 4px;
+  }
+
+  .expand-btn:hover {
+    background: var(--background, #f9fafb);
+    color: var(--text, #111827);
+  }
+
+  .variant-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+    background: #dbeafe;
+    color: #1e40af;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 0.15rem 0.45rem;
+    border-radius: 20px;
+  }
+
+  .muted {
+    color: var(--text-light, #6b7280);
+    font-size: 0.85rem;
   }
 
   .actions-col {
@@ -520,13 +759,70 @@
     font-weight: 600;
   }
 
+  .expand-mobile-btn {
+    width: 100%;
+    padding: 0.55rem;
+    background: var(--background, #f9fafb);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--text, #111827);
+    margin-bottom: 0.5rem;
+  }
+
+  .variant-list {
+    margin-bottom: 0.75rem;
+  }
+
+  .variant-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.55rem 0;
+    border-bottom: 1px solid var(--border, #e5e7eb);
+  }
+
+  .variant-item:last-child {
+    border-bottom: none;
+  }
+
+  .variant-meta {
+    font-size: 0.78rem;
+    color: var(--text-light, #6b7280);
+    margin-top: 0.15rem;
+  }
+
+  .variant-actions {
+    display: flex;
+    gap: 0.25rem;
+  }
+
+  .icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border: 1px solid var(--border, #e5e7eb);
+    background: transparent;
+    border-radius: 6px;
+    cursor: pointer;
+    color: var(--text, #111827);
+    padding: 0;
+  }
+
+  .icon-btn.danger {
+    color: var(--danger, #dc2626);
+  }
+
   .card-actions {
     display: flex;
     gap: 0.4rem;
     flex-wrap: wrap;
   }
 
-  /* ============ MOBILE ============ */
   @media (max-width: 768px) {
     .products-header {
       flex-direction: column;

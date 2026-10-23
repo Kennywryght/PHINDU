@@ -1,30 +1,67 @@
 <script>
-  import { createEventDispatcher } from "svelte";
-  import { X } from "lucide-svelte";
+  import { createEventDispatcher, onMount } from "svelte";
+  import { X, Package } from "lucide-svelte";
+  import API from "../api/api";
 
   export let product = null;
   const dispatch = createEventDispatcher();
+
+  let parents = [];
+  let loadingParents = true;
+  let isVariantMode = false;
 
   let form = {
     name: "",
     category: "",
     type: "variant",
-    unit: "",
+    unit: "piece",
     selling_price: 0,
     purchase_price: 0,
     stock_qty: 0,
-    parent_id: "",
+    parent_id: null,
+    low_stock_threshold: 5,
   };
 
   if (product) {
-    form = { ...product };
+    form = {
+      name: product.name || "",
+      category: product.category || "",
+      type: product.type || "variant",
+      unit: product.unit || "piece",
+      selling_price: product.selling_price || 0,
+      purchase_price: product.purchase_price || 0,
+      stock_qty: product.stock_qty || 0,
+      parent_id: product.parent_id || null,
+      low_stock_threshold: product.low_stock_threshold || 5,
+    };
+    isVariantMode = !!product.parent_id;
   }
+
+  onMount(async () => {
+    try {
+      // Load parent candidates: top-level products only, exclude self
+      const res = await API.get("/products/?parents_only=true");
+      parents = res.data.filter((p) => !product || p.id !== product.id);
+    } catch (err) {
+      console.error("Failed to load parents", err);
+    } finally {
+      loadingParents = false;
+    }
+  });
 
   function handleSubmit() {
     const payload = { ...form };
-    if (!payload.parent_id || payload.parent_id.trim() === "") {
-      delete payload.parent_id;
+    // Parent products: strip prices to 0
+    if (!payload.parent_id) {
+      // It's a parent or standalone — keep prices as entered
+    } else {
+      // It's a variant — parent_id required, prices required
+      if (!payload.selling_price || payload.selling_price <= 0) {
+        alert("Variant requires a selling price > 0");
+        return;
+      }
     }
+    if (payload.parent_id === "") payload.parent_id = null;
     dispatch("save", payload);
   }
 
@@ -34,6 +71,13 @@
 
   function handleKeydown(e) {
     if (e.key === "Escape") close();
+  }
+
+  function toggleVariantMode() {
+    isVariantMode = !isVariantMode;
+    if (!isVariantMode) {
+      form.parent_id = null;
+    }
   }
 </script>
 
@@ -51,38 +95,83 @@
     <form on:submit|preventDefault={handleSubmit}>
       <div class="form-group">
         <label for="p-name">Name</label>
-        <input id="p-name" bind:value={form.name} required />
+        <input
+          id="p-name"
+          bind:value={form.name}
+          placeholder="e.g., Sugar, Rice, Cooking Oil"
+          required
+        />
       </div>
 
       <div class="form-group">
         <label for="p-category">Category</label>
-        <input id="p-category" bind:value={form.category} />
+        <input id="p-category" bind:value={form.category} placeholder="e.g., Food, Cleaning" />
       </div>
+
+      {#if !product}
+        <div class="form-group checkbox-group">
+          <label class="checkbox-label">
+            <input type="checkbox" checked={isVariantMode} on:change={toggleVariantMode} />
+            <span>This is a variant of an existing product</span>
+          </label>
+        </div>
+      {/if}
+
+      {#if isVariantMode}
+        <div class="form-group">
+          <label for="p-parent">Parent Product</label>
+          {#if loadingParents}
+            <p class="hint">Loading parents...</p>
+          {:else if parents.length === 0}
+            <p class="hint">No parent products yet. Create a parent first (uncheck the variant box).</p>
+          {:else}
+            <select id="p-parent" bind:value={form.parent_id} required>
+              <option value={null}>-- Select parent --</option>
+              {#each parents as p}
+                <option value={p.id}>{p.name}</option>
+              {/each}
+            </select>
+            <p class="hint">
+              <Package size={12} strokeWidth={2} /> Variants are grouped under their parent in
+              listings.
+            </p>
+          {/if}
+        </div>
+      {/if}
 
       <div class="form-row">
         <div class="form-group">
           <label for="p-type">Type</label>
           <select id="p-type" bind:value={form.type}>
-            <option value="variant">Variant</option>
-            <option value="simple">Simple</option>
+            <option value="variant">Variant (piece)</option>
             <option value="bulk">Bulk (weight)</option>
           </select>
         </div>
 
         <div class="form-group">
           <label for="p-unit">Unit</label>
-          <input id="p-unit" bind:value={form.unit} placeholder="e.g., piece, kg" />
+          <input id="p-unit" bind:value={form.unit} placeholder="piece / kg / g" />
         </div>
       </div>
 
       <div class="form-row">
         <div class="form-group">
-          <label for="p-selling">Selling Price</label>
-          <input id="p-selling" type="number" step="0.01" min="0" bind:value={form.selling_price} />
+          <label for="p-selling">
+            Selling Price {#if !isVariantMode}<span class="label-hint">(0 for parent)</span>{/if}
+          </label>
+          <input
+            id="p-selling"
+            type="number"
+            step="0.01"
+            min="0"
+            bind:value={form.selling_price}
+          />
         </div>
 
         <div class="form-group">
-          <label for="p-purchase">Purchase Price</label>
+          <label for="p-purchase">
+            Purchase Price {#if !isVariantMode}<span class="label-hint">(0 for parent)</span>{/if}
+          </label>
           <input
             id="p-purchase"
             type="number"
@@ -93,18 +182,21 @@
         </div>
       </div>
 
-      <div class="form-group">
-        <label for="p-stock">Stock Quantity</label>
-        <input id="p-stock" type="number" min="0" bind:value={form.stock_qty} />
-      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="p-stock">Stock Quantity</label>
+          <input id="p-stock" type="number" min="0" bind:value={form.stock_qty} />
+        </div>
 
-      <div class="form-group">
-        <label for="p-parent">Parent ID (optional)</label>
-        <input
-          id="p-parent"
-          bind:value={form.parent_id}
-          placeholder="Leave blank for standalone product"
-        />
+        <div class="form-group">
+          <label for="p-threshold">Low Stock Alert At</label>
+          <input
+            id="p-threshold"
+            type="number"
+            min="0"
+            bind:value={form.low_stock_threshold}
+          />
+        </div>
       </div>
 
       <div class="modal-actions">
@@ -181,12 +273,49 @@
     gap: 0.75rem;
   }
 
+  .checkbox-group {
+    background: var(--background, #f9fafb);
+    padding: 0.75rem;
+    border-radius: 8px;
+  }
+
+  .checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    cursor: pointer;
+    font-weight: 500;
+    font-size: 0.9rem;
+    color: var(--text, #111827);
+    margin: 0;
+  }
+
+  .checkbox-label input {
+    width: auto;
+    cursor: pointer;
+  }
+
   label {
     display: block;
     margin-bottom: 0.3rem;
     font-weight: 500;
     font-size: 0.88rem;
     color: var(--text, #111827);
+  }
+
+  .label-hint {
+    font-weight: 400;
+    color: var(--text-light, #6b7280);
+    font-size: 0.8rem;
+  }
+
+  .hint {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.8rem;
+    color: var(--text-light, #6b7280);
+    margin: 0.4rem 0 0;
   }
 
   input,
