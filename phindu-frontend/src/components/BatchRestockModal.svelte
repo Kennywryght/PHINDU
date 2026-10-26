@@ -1,5 +1,5 @@
 <script>
-  import { createEventDispatcher, onMount } from "svelte";
+  import { createEventDispatcher, onMount, onDestroy } from "svelte";
   import { X, Upload, FileText, Check, AlertCircle, Loader2, Download } from "lucide-svelte";
   import API from "../api/api";
 
@@ -15,6 +15,7 @@
   let preview = []; // [{row, name, quantity, cost_per_unit, notes, match, issue}]
   let applied = false;
   let applyResult = null;
+  let debounceTimer = null;
 
   const SAMPLE_CSV = `name,quantity,cost_per_unit,notes
 Sugar 1kg,30,800,From ABC supplier
@@ -31,6 +32,10 @@ Cooking Oil 1L,20,4500,`;
     } finally {
       loadingProducts = false;
     }
+  });
+
+  onDestroy(() => {
+    if (debounceTimer) clearTimeout(debounceTimer);
   });
 
   function close() {
@@ -205,9 +210,8 @@ Cooking Oil 1L,20,4500,`;
   }
 
   $: if (csvText.trim()) {
-    // Debounce slightly to avoid parsing on every keystroke
-    const t = setTimeout(buildPreview, 250);
-    return () => clearTimeout(t);
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(buildPreview, 250);
   } else {
     preview = [];
     error = null;
