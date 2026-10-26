@@ -129,3 +129,66 @@ def test_cashier_cannot_void(cashier_client, sample_product):
 
     res = cashier_client.post(f"/sales/{sale_id}/void")
     assert res.status_code == 403
+
+# ─── GET /sales/ richer response tests ──────────────────────────
+
+
+def test_get_sales_returns_line_items(owner_client, sample_product, sample_customer):
+    """GET /sales/ returns items with quantity + unit_price + total_price."""
+    owner_client.post(
+        "/sales/",
+        json={
+            "items": [{"product_id": sample_product["id"], "quantity": 2}],
+            "customer_id": sample_customer["id"],
+            "payment_status": "unpaid",
+        },
+    )
+    res = owner_client.get("/sales/")
+    assert res.status_code == 200
+    body = res.json()
+    # New response shape: { sales, total, has_more }
+    assert "sales" in body
+    assert body["total"] >= 1
+    sale = body["sales"][0]
+    assert "items" in sale
+    assert len(sale["items"]) >= 1
+    it = sale["items"][0]
+    assert it["name"] == sample_product["name"]
+    assert it["quantity"] == 2
+    assert "unit_price" in it
+    assert "total_price" in it
+    # Backward-compat fields present
+    assert sale["customer_name"] == sample_customer["name"]
+    assert isinstance(sale["products"], list)
+
+
+def test_get_sales_supports_pagination(owner_client, sample_product):
+    """limit + offset page through results."""
+    for i in range(3):
+        owner_client.post(
+            "/sales/",
+            json={"items": [{"product_id": sample_product["id"], "quantity": 1}]},
+        )
+    r1 = owner_client.get("/sales/?limit=2&offset=0").json()
+    assert len(r1["sales"]) == 2
+    assert r1["has_more"] is True
+
+    r2 = owner_client.get("/sales/?limit=2&offset=2").json()
+    assert len(r2["sales"]) == 1
+    assert r2["has_more"] is False
+
+
+def test_get_sales_filter_by_voided_status(owner_client, sample_product):
+    """?status=voided only returns voided sales."""
+    sale = owner_client.post(
+        "/sales/",
+        json={"items": [{"product_id": sample_product["id"], "quantity": 1}]},
+    ).json()
+    sale_id = sale["id"]
+    owner_client.post(f"/sales/{sale_id}/void")
+
+    voided = owner_client.get("/sales/?status=voided").json()
+    assert all(s["is_voided"] for s in voided["sales"])
+
+    paid = owner_client.get("/sales/?status=paid").json()
+    assert all(not s["is_voided"] for s in paid["sales"])

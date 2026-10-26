@@ -12,6 +12,11 @@
   let submitting = false;
   let error = null;
 
+  let qtyInput;
+  function focusOnMount(node) {
+    setTimeout(() => node?.focus(), 50);
+  }
+
   async function handleSubmit() {
     if (quantity <= 0) {
       error = "Quantity must be greater than 0";
@@ -23,7 +28,7 @@
       const res = await API.post(`/products/${product.id}/restock`, {
         quantity: parseFloat(quantity),
         cost_per_unit: costPerUnit > 0 ? parseFloat(costPerUnit) : null,
-        notes: notes.trim() || null,
+        notes: notes.trim() || "Restock",
       });
       dispatch("saved", res.data);
     } catch (err) {
@@ -39,6 +44,8 @@
   function handleKeydown(e) {
     if (e.key === "Escape") close();
   }
+
+  $: unitLabel = product.unit || "units";
 </script>
 
 <svelte:window on:keydown={handleKeydown} />
@@ -59,7 +66,7 @@
     </div>
 
     <div class="current-info">
-      Current stock: <strong>{product.stock_qty} {product.unit || "units"}</strong>
+      Current stock: <strong>{product.stock_qty} {unitLabel}</strong>
     </div>
 
     <form on:submit|preventDefault={handleSubmit}>
@@ -72,10 +79,11 @@
             min="0.01"
             step="0.01"
             bind:value={quantity}
+            use:focusOnMount
+            bind:this={qtyInput}
             required
-            autofocus
           />
-          <span class="unit-label">{product.unit || "units"}</span>
+          <span class="unit-label">{unitLabel}</span>
         </div>
       </div>
 
@@ -111,7 +119,7 @@
           Cancel
         </button>
         <button type="submit" class="btn btn-primary" disabled={submitting || quantity <= 0}>
-          {submitting ? "Adding..." : `Add ${quantity || 0} ${product.unit || "units"}`}
+          {submitting ? "Adding..." : `Add ${quantity || 0} ${unitLabel}`}
         </button>
       </div>
     </form>
@@ -174,7 +182,6 @@
     color: var(--text-light, #6b7280);
     line-height: 0;
   }
-
   .close-btn:hover {
     background: var(--background, #f9fafb);
   }
@@ -205,11 +212,9 @@
     display: flex;
     align-items: center;
   }
-
   .input-with-unit input {
     padding-right: 3.5rem;
   }
-
   .unit-label {
     position: absolute;
     right: 0.75rem;
@@ -230,11 +235,9 @@
     box-sizing: border-box;
     font-family: inherit;
   }
-
   textarea {
     resize: vertical;
   }
-
   input:focus,
   textarea:focus {
     outline: none;
@@ -275,27 +278,22 @@
     font-weight: 500;
     font-size: 0.9rem;
   }
-
   .btn-primary {
     background: var(--primary, #0f6b3e);
     color: white;
   }
-
   .btn-primary:hover:not(:disabled) {
     background: var(--primary-dark, #0a4f2e);
   }
-
   .btn-primary:disabled {
     opacity: 0.55;
     cursor: not-allowed;
   }
-
   .btn-secondary {
     background: var(--surface, #fff);
     border: 1px solid var(--border, #e5e7eb);
     color: var(--text, #111827);
   }
-
   .btn-secondary:hover:not(:disabled) {
     background: var(--background, #f9fafb);
   }

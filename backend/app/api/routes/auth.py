@@ -1,5 +1,5 @@
 """
-Authentication routes: register, login, me.
+Authentication routes: register, login, me, update, change-password.
 """
 
 import uuid
@@ -37,6 +37,7 @@ class UserOut(BaseModel):
     full_name: str
     role: str
     shop_id: str
+    shop_name: str | None = None
     is_active: bool
 
 
@@ -45,6 +46,15 @@ class RegisterRequest(BaseModel):
     full_name: str = Field(..., min_length=1, max_length=100)
     email: EmailStr
     password: str = Field(..., min_length=6, max_length=72)
+
+
+class UpdateProfileRequest(BaseModel):
+    full_name: str = Field(..., min_length=1, max_length=100)
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=6, max_length=72)
 
 
 # ─── Dependency: current user from JWT ──────────────────────────
@@ -70,7 +80,6 @@ def get_current_user(
     if not user:
         raise credentials_exc
 
-    # 🔧 Fix 2.3: block deactivated users even with a valid token
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -80,11 +89,23 @@ def get_current_user(
     return user
 
 
+def _user_to_out(user: User, db: Session) -> dict:
+    """Serialize a User, including the shop name for the profile page."""
+    shop = db.query(Shop).filter(Shop.id == user.shop_id).first()
+    return {
+        "id": user.id,
+        "email": user.email,
+        "full_name": user.full_name,
+        "role": user.role,
+        "shop_id": user.shop_id,
+        "shop_name": shop.name if shop else None,
+        "is_active": bool(user.is_active),
+    }
+
+
 # ─── Endpoints ──────────────────────────────────────────────────
 @router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
 def register(data: RegisterRequest, db: Session = Depends(get_db)):
-    # Password byte-length check (PBKDF2 has no 72-byte limit, but keep
-    # it consistent with bcrypt's typical limit for future compat)
     if len(data.password.encode("utf-8")) > 72:
         raise HTTPException(status_code=400, detail="Password too long (max 72 bytes)")
 
@@ -129,5 +150,45 @@ def login(
 
 
 @router.get("/me", response_model=UserOut)
-def get_me(current_user: User = Depends(get_current_user)):
-    return current_user
+def get_me(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return _user_to_out(current_user, db)
+
+
+@router.put("/me", response_model=UserOut)
+def update_me(
+    data: UpdateProfileRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Update the current user's profile. Only `full_name` is editable."""
+    current_user.full_name = data.full_name.strip()
+    db.commit()
+    db.refresh(current_user)
+    return _user_to_out(current_user, db)
+
+
+@router.post("/change-password")
+def change_password(
+    data: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Change the current user's password. Verifies current password first."""
+    if not verify_password(data.current_password, current_user.hashed_password):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+
+    if data.current_password == data.new_password:
+        raise HTTPException(
+            status_code=400,
+            detail="New password must be different from current password",
+        )
+
+    if len(data.new_password.encode("utf-8")) > 72:
+        raise HTTPException(status_code=400, detail="Password too long (max 72 bytes)")
+
+    current_user.hashed_password = get_password_hash(data.new_password)
+    db.commit()
+    return {"message": "Password updated successfully"}

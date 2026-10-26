@@ -16,6 +16,7 @@ from app.db.models.sale import Sale, SaleItem
 from app.db.models.stock import StockBatch
 from app.db.session import SessionLocal
 from app.schemas.product import (
+    BulkProductCreate,
     ProductCreate,
     ProductOut,
     ProductUpdate,
@@ -25,15 +26,38 @@ from app.schemas.product import (
 router = APIRouter(prefix="/products", tags=["Products"])
 
 
-# ── Restock request schema ────────────────────────────────────────
+# ── Schemas ───────────────────────────────────────────────────────
 class RestockRequest(BaseModel):
     quantity: float = Field(..., gt=0, description="Quantity to add to stock")
     cost_per_unit: Optional[float] = Field(None, ge=0, description="Optional cost per unit")
     notes: Optional[str] = Field(None, max_length=500, description="Optional notes")
 
 
+class BatchRestockItem(BaseModel):
+    product_id: str
+    quantity: float = Field(..., gt=0)
+    cost_per_unit: Optional[float] = Field(None, ge=0)
+    notes: Optional[str] = Field(None, max_length=500)
+
+
+class BatchRestockRequest(BaseModel):
+    items: list[BatchRestockItem] = Field(..., min_length=1)
+
+
+class BulkIdsRequest(BaseModel):
+    product_ids: list[str] = Field(..., min_length=1)
+
+
+class BulkRestockItem(BaseModel):
+    product_id: str
+    quantity: float = Field(..., gt=0)
+
+
+class BulkRestockRequest(BaseModel):
+    items: list[BulkRestockItem] = Field(..., min_length=1)
+
+
 def get_db():
-    """Yield a database session for route handlers."""
     db = SessionLocal()
     try:
         yield db
@@ -42,7 +66,6 @@ def get_db():
 
 
 def _product_to_out(product: Product, variant_count: int = 0) -> dict:
-    """Convert a Product ORM object to a dict matching ProductOut."""
     return {
         "id": product.id,
         "shop_id": product.shop_id,
@@ -63,7 +86,6 @@ def _product_to_out(product: Product, variant_count: int = 0) -> dict:
 
 
 def _variant_count_for(db: Session, product_id: str, shop_id: str) -> int:
-    """Count variants of this product."""
     return (
         db.query(func.count(Product.id))
         .filter(
@@ -76,13 +98,440 @@ def _variant_count_for(db: Session, product_id: str, shop_id: str) -> int:
     )
 
 
+# ─────────────────────────────────────────────────────────────────
+# LITERAL PATHS FIRST (FastAPI matches in declaration order)
+# ─────────────────────────────────────────────────────────────────
+
+
+@router.get("/categories")
+def list_categories(
+    db: Session = Depends(get_db),
+    shop_id: str = Depends(get_current_shop_id),
+):
+    """Return distinct categories used in this shop with usage counts."""
+    rows = (
+        db.query(
+            Product.category,
+            func.count(Product.id).label("count"),
+        )
+        .filter(
+            Product.shop_id == shop_id,
+            Product.is_deleted == False,
+            Product.category.isnot(None),
+            Product.category != "",
+        )
+        .group_by(Product.category)
+        .order_by(Product.category)
+        .all()
+    )
+
+    return [
+        {"name": r.category, "count": int(r.count or 0)}
+        for r in rows
+        if r.category
+    ]
+
+
+@router.post("/batch-restock")
+def batch_restock(
+    payload: BatchRestockRequest,
+    db: Session = Depends(get_db),
+    shop_id: str = Depends(get_current_shop_id),
+):
+    """Restock multiple products in one atomic transaction (CSV flow)."""
+    product_ids = [item.product_id for item in payload.items]
+    products = (
+        db.query(Product)
+        .filter(Product.id.in_(product_ids), Product.shop_id == shop_id)
+        .all()
+    )
+    by_id = {p.id: p for p in products}
+
+    missing = [pid for pid in product_ids if pid not in by_id]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Products not found in this shop: {', '.join(missing)}",
+        )
+
+    deleted = [p.name for p in products if p.is_deleted]
+    if deleted:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot restock deleted products: {', '.join(deleted)}",
+        )
+
+    for item in payload.items:
+        product = by_id[item.product_id]
+        if product.parent_id is None:
+            vc = _variant_count_for(db, product.id, shop_id)
+            if vc > 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Cannot restock parent product '{product.name}' — "
+                        f"restock its {vc} variant(s) instead"
+                    ),
+                )
+
+    now = datetime.utcnow()
+    created_batches = []
+    for item in payload.items:
+        product = by_id[item.product_id]
+        batch = StockBatch(
+            shop_id=shop_id,
+            product_id=product.id,
+            quantity_added=item.quantity,
+            date_added=now,
+            cost_per_unit=item.cost_per_unit,
+            notes=item.notes or "Batch restock",
+        )
+        db.add(batch)
+        product.stock_qty = (product.stock_qty or 0) + item.quantity
+        created_batches.append((batch, product, item.quantity))
+
+    db.commit()
+
+    for batch, product, _qty in created_batches:
+        db.refresh(batch)
+        db.refresh(product)
+
+    return {
+        "message": f"Restocked {len(payload.items)} product(s) successfully",
+        "items": [
+            {
+                "product_id": product.id,
+                "product_name": product.name,
+                "quantity_added": qty,
+                "new_stock": product.stock_qty or 0,
+                "batch_id": batch.id,
+            }
+            for batch, product, qty in created_batches
+        ],
+    }
+
+
+# ─────────────────────────────────────────────────────────────────
+# TIER 3.3: Bulk product creation (Variant Wizard)
+# ─────────────────────────────────────────────────────────────────
+
+
+@router.post("/bulk")
+def bulk_create_product(
+    payload: BulkProductCreate,
+    db: Session = Depends(get_db),
+    shop_id: str = Depends(get_current_shop_id),
+):
+    """Create one parent (or standalone) product + N variants atomically."""
+    if payload.has_variants and len(payload.variants) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="has_variants=True requires at least one variant",
+        )
+
+    if not payload.has_variants and payload.selling_price <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Standalone product requires selling_price > 0",
+        )
+
+    if payload.has_variants:
+        seen = set()
+        for v in payload.variants:
+            key = v.name.strip().lower()
+            if key in seen:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Duplicate variant name: {v.name}",
+                )
+            seen.add(key)
+
+    try:
+        parent = Product(
+            shop_id=shop_id,
+            name=payload.name.strip(),
+            category=payload.category,
+            type=payload.type,
+            unit=payload.unit,
+            selling_price=0 if payload.has_variants else (payload.selling_price or 0),
+            purchase_price=0 if payload.has_variants else (payload.purchase_price or 0),
+            stock_qty=0 if payload.has_variants else (payload.stock_qty or 0),
+            parent_id=None,
+            low_stock_threshold=payload.low_stock_threshold or 5,
+        )
+        db.add(parent)
+        db.flush()
+
+        if not payload.has_variants:
+            if parent.selling_price and parent.selling_price > 0:
+                db.add(
+                    PriceHistory(
+                        product_id=parent.id,
+                        old_price=None,
+                        new_price=parent.selling_price,
+                        price_type="selling",
+                    )
+                )
+            if parent.purchase_price and parent.purchase_price > 0:
+                db.add(
+                    PriceHistory(
+                        product_id=parent.id,
+                        old_price=None,
+                        new_price=parent.purchase_price,
+                        price_type="purchase",
+                    )
+                )
+            if parent.stock_qty and parent.stock_qty > 0:
+                db.add(
+                    StockBatch(
+                        shop_id=shop_id,
+                        product_id=parent.id,
+                        quantity_added=parent.stock_qty,
+                        date_added=datetime.utcnow(),
+                        cost_per_unit=parent.purchase_price or None,
+                        notes="Initial stock",
+                    )
+                )
+
+        created_variants: list[Product] = []
+        if payload.has_variants:
+            now = datetime.utcnow()
+            for v in payload.variants:
+                child = Product(
+                    shop_id=shop_id,
+                    name=v.name.strip(),
+                    category=payload.category,
+                    type=payload.type,
+                    unit=payload.unit,
+                    selling_price=v.selling_price,
+                    purchase_price=v.purchase_price,
+                    stock_qty=v.stock_qty,
+                    parent_id=parent.id,
+                    low_stock_threshold=v.low_stock_threshold or 5,
+                )
+                db.add(child)
+                db.flush()
+
+                if child.selling_price > 0:
+                    db.add(
+                        PriceHistory(
+                            product_id=child.id,
+                            old_price=None,
+                            new_price=child.selling_price,
+                            price_type="selling",
+                        )
+                    )
+                if child.purchase_price > 0:
+                    db.add(
+                        PriceHistory(
+                            product_id=child.id,
+                            old_price=None,
+                            new_price=child.purchase_price,
+                            price_type="purchase",
+                        )
+                    )
+                if child.stock_qty > 0:
+                    db.add(
+                        StockBatch(
+                            shop_id=shop_id,
+                            product_id=child.id,
+                            quantity_added=child.stock_qty,
+                            date_added=now,
+                            cost_per_unit=child.purchase_price or None,
+                            notes="Initial stock",
+                        )
+                    )
+                created_variants.append(child)
+
+        db.commit()
+
+    except Exception:
+        db.rollback()
+        raise
+
+    db.refresh(parent)
+    for v in created_variants:
+        db.refresh(v)
+
+    vc = _variant_count_for(db, parent.id, shop_id)
+    return {
+        "parent": _product_to_out(parent, variant_count=vc),
+        "variants": [_product_to_out(v) for v in created_variants],
+        "variant_count": len(created_variants),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────
+# TIER 4.2: Bulk actions
+# ─────────────────────────────────────────────────────────────────
+
+
+def _load_products_for_bulk(
+    db: Session, shop_id: str, product_ids: list[str]
+) -> list[Product]:
+    """Fetch, validate ownership, and refuse missing ids. All-or-nothing."""
+    products = (
+        db.query(Product)
+        .filter(Product.id.in_(product_ids), Product.shop_id == shop_id)
+        .all()
+    )
+    by_id = {p.id: p for p in products}
+    missing = [pid for pid in product_ids if pid not in by_id]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Products not found in this shop: {', '.join(missing)}",
+        )
+    return products
+
+
+@router.post(
+    "/bulk-archive",
+    dependencies=[Depends(require_role("owner", "manager"))],
+)
+def bulk_archive(
+    payload: BulkIdsRequest,
+    db: Session = Depends(get_db),
+    shop_id: str = Depends(get_current_shop_id),
+):
+    products = _load_products_for_bulk(db, shop_id, payload.product_ids)
+    changed = 0
+    for p in products:
+        if not p.archived:
+            p.archived = True
+            changed += 1
+    db.commit()
+    return {
+        "message": f"Archived {changed} product(s)",
+        "affected": changed,
+        "total": len(products),
+    }
+
+
+@router.post(
+    "/bulk-unarchive",
+    dependencies=[Depends(require_role("owner", "manager"))],
+)
+def bulk_unarchive(
+    payload: BulkIdsRequest,
+    db: Session = Depends(get_db),
+    shop_id: str = Depends(get_current_shop_id),
+):
+    products = _load_products_for_bulk(db, shop_id, payload.product_ids)
+    changed = 0
+    for p in products:
+        if p.archived:
+            p.archived = False
+            changed += 1
+    db.commit()
+    return {"message": f"Unarchived {changed} product(s)", "affected": changed}
+
+
+@router.post(
+    "/bulk-soft-delete",
+    dependencies=[Depends(require_role("owner"))],
+)
+def bulk_soft_delete(
+    payload: BulkIdsRequest,
+    db: Session = Depends(get_db),
+    shop_id: str = Depends(get_current_shop_id),
+):
+    products = _load_products_for_bulk(db, shop_id, payload.product_ids)
+    changed = 0
+    for p in products:
+        if not p.is_deleted:
+            p.is_deleted = True
+            changed += 1
+    db.commit()
+    return {
+        "message": f"Moved {changed} product(s) to Deleted",
+        "affected": changed,
+        "total": len(products),
+    }
+
+
+@router.post(
+    "/bulk-restore",
+    dependencies=[Depends(require_role("owner"))],
+)
+def bulk_restore(
+    payload: BulkIdsRequest,
+    db: Session = Depends(get_db),
+    shop_id: str = Depends(get_current_shop_id),
+):
+    products = _load_products_for_bulk(db, shop_id, payload.product_ids)
+    changed = 0
+    for p in products:
+        if p.is_deleted:
+            p.is_deleted = False
+            changed += 1
+    db.commit()
+    return {"message": f"Restored {changed} product(s)", "affected": changed}
+
+
+@router.post(
+    "/bulk-restock",
+    dependencies=[Depends(require_role("owner", "manager"))],
+)
+def bulk_restock(
+    payload: BulkRestockRequest,
+    db: Session = Depends(get_db),
+    shop_id: str = Depends(get_current_shop_id),
+):
+    """Thin wrapper over /batch-restock for the "bulk select → restock" flow."""
+    product_ids = [item.product_id for item in payload.items]
+    products = _load_products_for_bulk(db, shop_id, product_ids)
+    by_id = {p.id: p for p in products}
+
+    deleted = [p.name for p in products if p.is_deleted]
+    if deleted:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot restock deleted products: {', '.join(deleted)}",
+        )
+
+    for item in payload.items:
+        product = by_id[item.product_id]
+        if product.parent_id is None:
+            vc = _variant_count_for(db, product.id, shop_id)
+            if vc > 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Cannot restock parent product '{product.name}' — "
+                        f"restock its variants instead"
+                    ),
+                )
+
+    now = datetime.utcnow()
+    for item in payload.items:
+        product = by_id[item.product_id]
+        db.add(
+            StockBatch(
+                shop_id=shop_id,
+                product_id=product.id,
+                quantity_added=item.quantity,
+                date_added=now,
+                notes="Bulk restock",
+            )
+        )
+        product.stock_qty = (product.stock_qty or 0) + item.quantity
+
+    db.commit()
+    return {"message": f"Restocked {len(payload.items)} product(s)"}
+
+
+# ─────────────────────────────────────────────────────────────────
+# CRUD + everything else
+# ─────────────────────────────────────────────────────────────────
+
+
 @router.post("/", response_model=ProductOut)
 def create_product(
     product: ProductCreate,
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """Create a new product or variant."""
     if product.parent_id:
         parent = (
             db.query(Product)
@@ -117,15 +566,16 @@ def create_product(
     db.refresh(new_product)
 
     if new_product.stock_qty and new_product.stock_qty > 0:
-        batch = StockBatch(
-            shop_id=shop_id,
-            product_id=new_product.id,
-            quantity_added=new_product.stock_qty,
-            date_added=datetime.utcnow(),
-            cost_per_unit=new_product.purchase_price or None,
-            notes="Initial stock",
+        db.add(
+            StockBatch(
+                shop_id=shop_id,
+                product_id=new_product.id,
+                quantity_added=new_product.stock_qty,
+                date_added=datetime.utcnow(),
+                cost_per_unit=new_product.purchase_price or None,
+                notes="Initial stock",
+            )
         )
-        db.add(batch)
         db.commit()
 
     if new_product.selling_price and new_product.selling_price > 0:
@@ -156,10 +606,17 @@ def get_products(
     include_deleted: bool = False,
     parents_only: bool = Query(False),
     include_archived: bool = Query(True),
+    leaf_only: bool = Query(
+        False,
+        description=(
+            "Return only sellable leaves: variants (parent_id set) and "
+            "standalone products (parent_id null AND no variant children). "
+            "Parents WITH children are excluded. Used by POS."
+        ),
+    ),
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """List products for the current shop."""
     query = db.query(Product).filter(Product.shop_id == shop_id)
 
     if not include_deleted:
@@ -170,6 +627,22 @@ def get_products(
         query = query.filter(Product.parent_id.is_(None))
 
     products = query.order_by(Product.name).all()
+
+    # If leaf_only, exclude parents that have children
+    if leaf_only:
+        parent_ids_with_children = {
+            row.parent_id
+            for row in db.query(Product.parent_id)
+            .filter(
+                Product.shop_id == shop_id,
+                Product.parent_id.isnot(None),
+                Product.is_deleted == False,
+            )
+            .distinct()
+            .all()
+            if row.parent_id
+        }
+        products = [p for p in products if p.id not in parent_ids_with_children]
 
     result = []
     for p in products:
@@ -184,7 +657,6 @@ def get_product(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """Get a single product by ID."""
     product = (
         db.query(Product)
         .filter(Product.id == product_id, Product.shop_id == shop_id)
@@ -196,7 +668,6 @@ def get_product(
     return _product_to_out(product, variant_count=vc)
 
 
-# ── Price history ─────────────────────────────────────────────────
 @router.get("/{product_id}/price-history")
 def get_price_history(
     product_id: str,
@@ -204,7 +675,6 @@ def get_price_history(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """Return price change history for a product, newest first."""
     product = (
         db.query(Product)
         .filter(Product.id == product_id, Product.shop_id == shop_id)
@@ -259,7 +729,6 @@ def get_price_history(
     }
 
 
-# ── Restock history ───────────────────────────────────────────────
 @router.get("/{product_id}/restocks")
 def get_restocks(
     product_id: str,
@@ -267,7 +736,6 @@ def get_restocks(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """Return restock history (stock batches) for a product, newest first."""
     product = (
         db.query(Product)
         .filter(Product.id == product_id, Product.shop_id == shop_id)
@@ -306,7 +774,6 @@ def get_restocks(
             "is_active": b.date_finished is None,
         })
 
-    # Compute sell-speed summary
     finished_batches = [r for r in result if r["days_to_sell"] is not None]
     avg_days_to_sell = None
     if finished_batches:
@@ -314,9 +781,6 @@ def get_restocks(
             sum(r["days_to_sell"] for r in finished_batches) / len(finished_batches),
             1,
         )
-
-    total_restocks = len(result)
-    total_quantity = sum(r["quantity_added"] for r in result)
 
     return {
         "product": {
@@ -326,8 +790,8 @@ def get_restocks(
             "current_stock": product.stock_qty or 0,
         },
         "summary": {
-            "total_restocks": total_restocks,
-            "total_quantity_restocked": total_quantity,
+            "total_restocks": len(result),
+            "total_quantity_restocked": sum(r["quantity_added"] for r in result),
             "avg_days_to_sell": avg_days_to_sell,
             "last_restock_date": result[0]["date_added"] if result else None,
         },
@@ -335,7 +799,6 @@ def get_restocks(
     }
 
 
-# ── Restock (add stock) ───────────────────────────────────────────
 @router.post("/{product_id}/restock")
 def restock_product(
     product_id: str,
@@ -343,11 +806,6 @@ def restock_product(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """
-    Add stock to a product. Creates a new StockBatch and updates product stock_qty.
-
-    Optionally records cost_per_unit and notes for the batch.
-    """
     product = (
         db.query(Product)
         .filter(Product.id == product_id, Product.shop_id == shop_id)
@@ -358,9 +816,8 @@ def restock_product(
     if product.is_deleted:
         raise HTTPException(status_code=400, detail="Cannot restock deleted product")
     if product.parent_id is None:
-        # Check if this product has variants — parent products shouldn't have stock
-        variant_count = _variant_count_for(db, product_id, shop_id)
-        if variant_count > 0:
+        vc = _variant_count_for(db, product_id, shop_id)
+        if vc > 0:
             raise HTTPException(
                 status_code=400,
                 detail="Cannot restock a parent product — restock its variants instead",
@@ -369,7 +826,6 @@ def restock_product(
     if restock.quantity <= 0:
         raise HTTPException(status_code=400, detail="Quantity must be positive")
 
-    # Create batch
     batch = StockBatch(
         shop_id=shop_id,
         product_id=product_id,
@@ -379,8 +835,6 @@ def restock_product(
         notes=restock.notes,
     )
     db.add(batch)
-
-    # Update product stock
     product.stock_qty = (product.stock_qty or 0) + restock.quantity
 
     db.commit()
@@ -399,16 +853,12 @@ def restock_product(
     }
 
 
-# ── Sell speed (moved from analytics) ─────────────────────────────
 @router.get("/{product_id}/sell-speed")
 def get_sell_speed(
     product_id: str,
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """
-    Return sell-speed analytics for a product based on finished batches.
-    """
     product = (
         db.query(Product)
         .filter(Product.id == product_id, Product.shop_id == shop_id)
@@ -460,7 +910,6 @@ def get_variants(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """List all variants of a parent product."""
     parent = (
         db.query(Product)
         .filter(Product.id == parent_id, Product.shop_id == shop_id)
@@ -469,7 +918,7 @@ def get_variants(
     if not parent:
         raise HTTPException(status_code=404, detail="Parent product not found")
 
-    variants = (
+    return (
         db.query(Product)
         .filter(
             Product.parent_id == parent_id,
@@ -480,19 +929,74 @@ def get_variants(
         .order_by(Product.name)
         .all()
     )
-    return variants
+
+
+# ─────────────────────────────────────────────────────────────────
+# DELETION FAMILY
+# ─────────────────────────────────────────────────────────────────
+
+
+@router.put(
+    "/soft-delete/{product_id}",
+    dependencies=[Depends(require_role("owner"))],
+)
+def soft_delete_product(
+    product_id: str,
+    db: Session = Depends(get_db),
+    shop_id: str = Depends(get_current_shop_id),
+):
+    product = (
+        db.query(Product)
+        .filter(Product.id == product_id, Product.shop_id == shop_id)
+        .first()
+    )
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    if product.is_deleted:
+        return {"message": "Product is already in the Deleted tab"}
+
+    product.is_deleted = True
+    db.commit()
+    return {
+        "message": "Product moved to Deleted tab (recoverable)",
+        "product_id": product.id,
+        "is_deleted": True,
+    }
+
+
+@router.put(
+    "/restore/{product_id}",
+    dependencies=[Depends(require_role("owner"))],
+)
+def restore_product(
+    product_id: str,
+    db: Session = Depends(get_db),
+    shop_id: str = Depends(get_current_shop_id),
+):
+    product = (
+        db.query(Product)
+        .filter(Product.id == product_id, Product.shop_id == shop_id)
+        .first()
+    )
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    if not product.is_deleted:
+        return {"message": "Product is not in the Deleted tab"}
+
+    product.is_deleted = False
+    db.commit()
+    return {"message": "Product restored"}
 
 
 @router.delete(
     "/{product_id}",
     dependencies=[Depends(require_role("owner"))],
 )
-def delete_product(
+def permanent_delete_product(
     product_id: str,
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """Delete a product. Blocks if it has active variants."""
     product = (
         db.query(Product)
         .filter(Product.id == product_id, Product.shop_id == shop_id)
@@ -513,11 +1017,59 @@ def delete_product(
     if sale_exists:
         product.is_deleted = True
         db.commit()
-        return {"message": "Product soft-deleted (used in sales)"}
+        return {
+            "message": (
+                "Product appears in sales history — cannot be fully removed. "
+                "Moved to Deleted tab instead."
+            ),
+            "soft_deleted": True,
+        }
 
     db.delete(product)
     db.commit()
-    return {"message": "Product permanently deleted"}
+    return {"message": "Product permanently deleted", "soft_deleted": False}
+
+
+@router.put(
+    "/archive/{product_id}",
+    dependencies=[Depends(require_role("owner", "manager"))],
+)
+def archive_product(
+    product_id: str,
+    db: Session = Depends(get_db),
+    shop_id: str = Depends(get_current_shop_id),
+):
+    product = (
+        db.query(Product)
+        .filter(Product.id == product_id, Product.shop_id == shop_id)
+        .first()
+    )
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    product.archived = True
+    db.commit()
+    return {"message": "Product archived"}
+
+
+@router.put(
+    "/unarchive/{product_id}",
+    dependencies=[Depends(require_role("owner", "manager"))],
+)
+def unarchive_product(
+    product_id: str,
+    db: Session = Depends(get_db),
+    shop_id: str = Depends(get_current_shop_id),
+):
+    product = (
+        db.query(Product)
+        .filter(Product.id == product_id, Product.shop_id == shop_id)
+        .first()
+    )
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    product.archived = False
+    db.commit()
+    return {"message": "Product unarchived"}
 
 
 @router.put("/{product_id}", response_model=ProductOut)
@@ -527,7 +1079,6 @@ def update_product(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """Update product fields. Logs price changes."""
     product = (
         db.query(Product)
         .filter(Product.id == product_id, Product.shop_id == shop_id)
@@ -567,14 +1118,15 @@ def update_product(
         current_stock = product.stock_qty or 0
         if new_stock > current_stock:
             added_qty = new_stock - current_stock
-            batch = StockBatch(
-                shop_id=shop_id,
-                product_id=product.id,
-                quantity_added=added_qty,
-                date_added=datetime.utcnow(),
-                notes="Stock adjusted via product edit",
+            db.add(
+                StockBatch(
+                    shop_id=shop_id,
+                    product_id=product.id,
+                    quantity_added=added_qty,
+                    date_added=datetime.utcnow(),
+                    notes="Stock adjusted via product edit",
+                )
             )
-            db.add(batch)
         product.stock_qty = new_stock
 
     for field, value in update_data.items():
@@ -591,75 +1143,12 @@ def update_product(
     return _product_to_out(product, variant_count=vc)
 
 
-@router.put("/restore/{product_id}")
-def restore_product(
-    product_id: str,
-    db: Session = Depends(get_db),
-    shop_id: str = Depends(get_current_shop_id),
-):
-    product = (
-        db.query(Product)
-        .filter(Product.id == product_id, Product.shop_id == shop_id)
-        .first()
-    )
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
-    product.is_deleted = False
-    db.commit()
-    return {"message": "Product restored"}
-
-
-@router.put("/archive/{product_id}")
-def archive_product(
-    product_id: str,
-    db: Session = Depends(get_db),
-    shop_id: str = Depends(get_current_shop_id),
-):
-    product = (
-        db.query(Product)
-        .filter(Product.id == product_id, Product.shop_id == shop_id)
-        .first()
-    )
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
-    product.archived = True
-    db.commit()
-    return {"message": "Product archived"}
-
-
-@router.put("/unarchive/{product_id}")
-def unarchive_product(
-    product_id: str,
-    db: Session = Depends(get_db),
-    shop_id: str = Depends(get_current_shop_id),
-):
-    product = (
-        db.query(Product)
-        .filter(Product.id == product_id, Product.shop_id == shop_id)
-        .first()
-    )
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
-    product.archived = False
-    db.commit()
-    return {"message": "Product unarchived"}
-
-
-# ── Restock Prediction ────────────────────────────────────────────
 @router.get("/{product_id}/restock-prediction")
 def get_restock_prediction(
     product_id: str,
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """
-    Predict when this product needs restocking.
-
-    Two methods:
-      1. "batch_life" — if 2+ finished batches exist, use avg batch duration
-      2. "sales_velocity" — fallback: current_stock / avg_daily_sales
-      3. "no_data" — not enough history
-    """
     product = (
         db.query(Product)
         .filter(Product.id == product_id, Product.shop_id == shop_id)
@@ -671,7 +1160,6 @@ def get_restock_prediction(
     now = datetime.utcnow()
     current_stock = product.stock_qty or 0
 
-    # Get finished batches (ordered newest first)
     finished_batches = (
         db.query(StockBatch)
         .filter(
@@ -683,7 +1171,6 @@ def get_restock_prediction(
         .all()
     )
 
-    # Get most recent batch (finished or not) for last_restock_date
     latest_batch = (
         db.query(StockBatch)
         .filter(
@@ -696,7 +1183,6 @@ def get_restock_prediction(
 
     last_restock_date = latest_batch.date_added if latest_batch else None
 
-    # ── Method 1: batch life ──
     if len(finished_batches) >= 2:
         total_days = 0
         valid_count = 0
@@ -714,9 +1200,7 @@ def get_restock_prediction(
                 if last_restock_date
                 else None
             )
-            days_until = (
-                (predicted_next - now).days if predicted_next else None
-            )
+            days_until = (predicted_next - now).days if predicted_next else None
 
             return {
                 "product_id": product.id,
@@ -736,7 +1220,6 @@ def get_restock_prediction(
                 "method": "batch_life",
             }
 
-    # ── Method 2: sales velocity ──
     cutoff = now - timedelta(days=30)
     sold_total = (
         db.query(func.sum(SaleItem.quantity))
@@ -753,9 +1236,7 @@ def get_restock_prediction(
 
     if sold_total > 0:
         avg_daily = float(sold_total) / 30.0
-        days_until = (
-            round(current_stock / avg_daily, 1) if avg_daily > 0 else None
-        )
+        days_until = round(current_stock / avg_daily, 1) if avg_daily > 0 else None
         predicted_next = (
             now + timedelta(days=days_until) if days_until is not None else None
         )
@@ -778,7 +1259,6 @@ def get_restock_prediction(
             "method": "sales_velocity",
         }
 
-    # ── Method 3: no data ──
     return {
         "product_id": product.id,
         "name": product.name,

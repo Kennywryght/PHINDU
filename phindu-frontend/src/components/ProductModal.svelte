@@ -1,6 +1,6 @@
 <script>
   import { createEventDispatcher, onMount } from "svelte";
-  import { X, Package, TrendingUp, PackagePlus, Clock } from "lucide-svelte";
+  import { X, Package, TrendingUp, PackagePlus, Clock, Plus } from "lucide-svelte";
   import API from "../api/api";
   import PriceHistoryModal from "./PriceHistoryModal.svelte";
   import RestockHistoryModal from "./RestockHistoryModal.svelte";
@@ -16,8 +16,13 @@
   let showRestockHistoryModal = false;
   let showRestockModal = false;
 
-  // 🔧 NEW: restock prediction
   let restockPrediction = null;
+
+  // ── Categories ──
+  let categories = [];
+  let loadingCategories = true;
+  let useNewCategory = false;
+  let newCategoryName = "";
 
   let form = {
     name: "",
@@ -44,11 +49,11 @@
       low_stock_threshold: product.low_stock_threshold || 5,
     };
     isVariantMode = !!product.parent_id;
+    // If editing a product with a category, reflect that (dropdown shows it once loaded)
   }
 
-  // 🔧 NEW: Fetch restock prediction on mount (only for existing products)
   onMount(async () => {
-    // Fetch parents
+    // Load parents
     try {
       const res = await API.get("/products/?parents_only=true");
       parents = res.data.filter((p) => !product || p.id !== product.id);
@@ -58,7 +63,18 @@
       loadingParents = false;
     }
 
-    // Fetch restock prediction (existing product only)
+    // Load categories from backend
+    try {
+      const res = await API.get("/products/categories");
+      categories = res.data || [];
+    } catch (err) {
+      console.error("Failed to load categories", err);
+      categories = [];
+    } finally {
+      loadingCategories = false;
+    }
+
+    // Load restock prediction (existing product only)
     if (product && product.id) {
       try {
         const predRes = await API.get(`/products/${product.id}/restock-prediction`);
@@ -71,9 +87,18 @@
 
   function handleSubmit() {
     const payload = { ...form };
-    if (!payload.parent_id) {
-      // Parent or standalone
-    } else {
+
+    // If "new category" mode is on, use the typed name
+    if (useNewCategory) {
+      const trimmed = newCategoryName.trim();
+      if (!trimmed) {
+        alert("Please enter a category name");
+        return;
+      }
+      payload.category = trimmed;
+    }
+
+    if (payload.parent_id) {
       if (!payload.selling_price || payload.selling_price <= 0) {
         alert("Variant requires a selling price > 0");
         return;
@@ -100,54 +125,44 @@
 
   function toggleVariantMode() {
     isVariantMode = !isVariantMode;
-    if (!isVariantMode) {
-      form.parent_id = null;
-    }
+    if (!isVariantMode) form.parent_id = null;
   }
 
   function openHistory() {
     showHistoryModal = true;
   }
-
   function closeHistory() {
     showHistoryModal = false;
   }
-
   function openRestockHistory() {
     showRestockHistoryModal = true;
   }
-
   function closeRestockHistory() {
     showRestockHistoryModal = false;
   }
-
   function openRestock() {
     showRestockModal = true;
   }
-
   function closeRestock() {
     showRestockModal = false;
   }
 
   async function handleRestockSaved(event) {
     showRestockModal = false;
-    // Update local form stock to reflect added
     if (event.detail?.product) {
       form.stock_qty = event.detail.product.stock_qty;
     }
-    // Refresh prediction (stock changed)
     if (product && product.id) {
       try {
         const predRes = await API.get(`/products/${product.id}/restock-prediction`);
         restockPrediction = predRes.data;
       } catch {
-        // Silent fail
+        /* ignore */
       }
     }
     dispatch("restocked", event.detail);
   }
 
-  // 🔧 NEW: prediction helpers
   function predictionClass(pred) {
     if (!pred || pred.days_until_restock === null) return "";
     const d = pred.days_until_restock;
@@ -164,6 +179,17 @@
     if (d === 0) return "Restock today";
     if (d === 1) return "Restock tomorrow";
     return `Restock in ~${d} days`;
+  }
+
+  function onCategorySelect(e) {
+    const val = e.target.value;
+    if (val === "__new__") {
+      useNewCategory = true;
+      form.category = "";
+    } else {
+      useNewCategory = false;
+      form.category = val;
+    }
   }
 </script>
 
@@ -191,7 +217,42 @@
 
       <div class="form-group">
         <label for="p-category">Category</label>
-        <input id="p-category" bind:value={form.category} placeholder="e.g., Food, Cleaning" />
+        {#if loadingCategories}
+          <p class="hint">Loading categories...</p>
+        {:else if !useNewCategory}
+          <select
+            id="p-category"
+            value={form.category || ""}
+            on:change={onCategorySelect}
+          >
+            <option value="">— No category —</option>
+            {#each categories as cat}
+              <option value={cat.name}>
+                {cat.name} ({cat.count})
+              </option>
+            {/each}
+            <option value="__new__">＋ New category…</option>
+          </select>
+        {:else}
+          <div class="new-cat-row">
+            <input
+              type="text"
+              bind:value={newCategoryName}
+              placeholder="New category name"
+              autofocus
+            />
+            <button
+              type="button"
+              class="btn-cancel-new"
+              on:click={() => {
+                useNewCategory = false;
+                newCategoryName = "";
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        {/if}
       </div>
 
       {#if !product}
@@ -281,7 +342,6 @@
       </div>
 
       {#if product}
-        <!-- 🔧 NEW: Restock prediction hint -->
         {#if restockPrediction && restockPrediction.method !== "no_data"}
           <div class="prediction-hint {predictionClass(restockPrediction)}">
             <Clock size={14} strokeWidth={2} />
@@ -296,7 +356,6 @@
           </div>
         {/if}
 
-        <!-- Quick actions for existing products -->
         <div class="quick-actions">
           <button type="button" class="action-card" on:click={openRestock}>
             <PackagePlus size={18} strokeWidth={2} />
@@ -459,7 +518,28 @@
     box-shadow: 0 0 0 3px rgba(15, 107, 62, 0.1);
   }
 
-  /* 🔧 NEW: Prediction hint */
+  .new-cat-row {
+    display: flex;
+    gap: 0.5rem;
+  }
+  .new-cat-row input {
+    flex: 1;
+  }
+  .btn-cancel-new {
+    border: 1px solid var(--border, #e5e7eb);
+    background: var(--surface, #fff);
+    border-radius: 8px;
+    padding: 0 0.75rem;
+    font-size: 0.82rem;
+    color: var(--text-light, #6b7280);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .btn-cancel-new:hover {
+    color: var(--text, #111827);
+    border-color: var(--text-light, #6b7280);
+  }
+
   .prediction-hint {
     display: flex;
     align-items: center;
@@ -471,19 +551,16 @@
     font-weight: 500;
     border-left: 3px solid transparent;
   }
-
   .prediction-hint.critical {
     background: #fee2e2;
     color: #991b1b;
     border-left-color: #dc2626;
   }
-
   .prediction-hint.soon {
     background: #fef3c7;
     color: #92400e;
     border-left-color: #ea580c;
   }
-
   .prediction-hint.ok {
     background: #dcfce7;
     color: #166534;
@@ -554,7 +631,6 @@
     background: var(--primary, #0f6b3e);
     color: white;
   }
-
   .btn-primary:hover {
     background: var(--primary-dark, #0a4f2e);
   }
@@ -564,7 +640,6 @@
     border: 1px solid var(--border, #e5e7eb);
     color: var(--text, #111827);
   }
-
   .btn-secondary:hover {
     background: var(--background, #f9fafb);
   }

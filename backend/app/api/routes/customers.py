@@ -1,7 +1,7 @@
 """Customer API routes (credit/debt + payment audit + risk scoring)."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -78,7 +78,6 @@ def _compute_credit_risk(db: Session, customer: Customer, shop_id: str) -> dict:
     warnings = []
     positives = []
 
-    # ── Gather data ──
     payments = (
         db.query(Payment)
         .filter(Payment.customer_id == customer.id, Payment.shop_id == shop_id)
@@ -125,14 +124,10 @@ def _compute_credit_risk(db: Session, customer: Customer, shop_id: str) -> dict:
 
     credit_ratio = (credit_sales_amount / total_sold) if total_sold > 0 else 0
 
-    # ── Apply scoring rules ──
-
-    # 1. Owes money but has never paid anything
     if current_balance > 0 and payment_count == 0:
         score -= 40
         warnings.append("Never made a payment on record")
 
-    # 2. Days to pay (only when there is payment history)
     if avg_days_to_pay is not None:
         if avg_days_to_pay > 45:
             score -= 25
@@ -147,7 +142,6 @@ def _compute_credit_risk(db: Session, customer: Customer, shop_id: str) -> dict:
             score += 5
             positives.append(f"Fast payer ({avg_days_to_pay} days average)")
 
-    # 3. Current balance vs typical purchase (only when balance > 0)
     if avg_purchase > 0 and current_balance > 0:
         ratio = current_balance / avg_purchase
         if ratio > 4:
@@ -159,15 +153,12 @@ def _compute_credit_risk(db: Session, customer: Customer, shop_id: str) -> dict:
         elif ratio > 1:
             score -= 8
 
-    # 4. Credit usage ratio (only when there are sales)
     if credit_ratio >= 0.5:
         score -= 20
         warnings.append(f"{int(credit_ratio * 100)}% of sales were on credit")
     elif credit_ratio >= 0.3:
         score -= 10
 
-    # 5. Account age — only penalise young accounts that ALREADY carry debt.
-    #    A brand-new customer with zero balance should not lose points.
     if (
         account_age_days is not None
         and account_age_days < 30
@@ -176,7 +167,6 @@ def _compute_credit_risk(db: Session, customer: Customer, shop_id: str) -> dict:
         score -= 10
         warnings.append(f"New account ({account_age_days} days old)")
 
-    # 6. Payment track record
     if payment_count >= 5:
         score += 5
         positives.append(f"{payment_count} successful payments")
@@ -185,7 +175,6 @@ def _compute_credit_risk(db: Session, customer: Customer, shop_id: str) -> dict:
 
     score = max(0, min(100, score))
 
-    # ── Classification ──
     has_history = sale_count > 0 or payment_count > 0
 
     if not has_history:
@@ -227,6 +216,30 @@ def _compute_credit_risk(db: Session, customer: Customer, shop_id: str) -> dict:
     }
 
 
+# ─── Overdue bucket helper ───────────────────────────────────────
+def _overdue_bucket(days_since_last_payment: int | None, never_paid: bool) -> str:
+    """
+    Bucket a debtor by how overdue their last payment is.
+
+    - "never"    → never paid anything
+    - "critical" → 30+ days or never
+    - "overdue"  → 14–29 days
+    - "warning"  → 7–13 days
+    - "ok"       → < 7 days
+    """
+    if never_paid:
+        return "never"
+    if days_since_last_payment is None:
+        return "never"
+    if days_since_last_payment >= 30:
+        return "critical"
+    if days_since_last_payment >= 14:
+        return "overdue"
+    if days_since_last_payment >= 7:
+        return "warning"
+    return "ok"
+
+
 # ─── Endpoints ───────────────────────────────────────────────────
 @router.post("/", response_model=CustomerOut)
 def create_customer(
@@ -255,18 +268,54 @@ def get_debtors(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """Return customers with outstanding credit (>0)."""
+    """
+    Return customers with outstanding credit (>0).
+
+    Each debtor includes:
+      - last_payment_date
+      - days_since_last_payment
+      - never_paid
+      - overdue_bucket  (ok / warning / overdue / critical / never)
+    """
     debtors = (
-        db.query(Customer).filter(Customer.total_credit > 0, Customer.shop_id == shop_id).all()
+        db.query(Customer)
+        .filter(Customer.total_credit > 0, Customer.shop_id == shop_id)
+        .all()
     )
 
+    # Batch-fetch last payment per debtor (one query)
+    last_payments: dict[str, datetime] = {}
+    if debtors:
+        debtor_ids = [c.id for c in debtors]
+        rows = (
+            db.query(Payment.customer_id, func.max(Payment.created_at).label("last_paid"))
+            .filter(
+                Payment.customer_id.in_(debtor_ids),
+                Payment.shop_id == shop_id,
+            )
+            .group_by(Payment.customer_id)
+            .all()
+        )
+        for row in rows:
+            if row.last_paid:
+                last_payments[row.customer_id] = row.last_paid
+
+    now = datetime.utcnow()
     result = []
     for c in debtors:
+        last_payment = last_payments.get(c.id)
+        never_paid = last_payment is None
+        days_since = (now - last_payment).days if last_payment else None
+
         item = {
             "id": c.id,
             "name": c.name,
             "phone": c.phone,
-            "total_credit": c.total_credit,
+            "total_credit": float(c.total_credit or 0),
+            "last_payment_date": last_payment.isoformat() if last_payment else None,
+            "days_since_last_payment": days_since,
+            "never_paid": never_paid,
+            "overdue_bucket": _overdue_bucket(days_since, never_paid),
         }
         if include_risk:
             item["risk"] = _compute_credit_risk(db, c, shop_id)

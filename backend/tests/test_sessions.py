@@ -163,3 +163,119 @@ def test_close_without_session_returns_404(app_client):
 
     res = app_client.post("/sessions/close?closing_balance=100")
     assert res.status_code == 404
+
+# ─── Session reconciliation tests ────────────────────────────────
+
+
+def test_current_summary_computes_expected_drawer(owner_client, sample_product):
+    """Opening 20,000 + cash sale + expense → expected in drawer."""
+    # Open session
+    owner_client.post("/sessions/open?opening_balance=20000")
+
+    # Cash sale
+    owner_client.post(
+        "/sales/",
+        json={"items": [{"product_id": sample_product["id"], "quantity": 2}]},
+    )
+
+    # Cash expense
+    owner_client.post(
+        "/expenses/",
+        json={"name": "Transport", "amount": 500, "category": "Transport"},
+    )
+
+    res = owner_client.get("/sessions/current/summary")
+    assert res.status_code == 200
+    data = res.json()
+    drawer = data["cash_drawer"]
+    assert drawer["opening_balance"] == 20000.0
+    assert drawer["minus_expenses"] == 500.0
+    assert drawer["expected_in_drawer"] == 20000.0 + data["sales"]["cash_sales"] - 500.0
+
+
+def test_close_session_computes_discrepancy(owner_client, sample_product):
+    """Close with physical count → stores expected + discrepancy."""
+    owner_client.post("/sessions/open?opening_balance=10000")
+
+    summary = owner_client.get("/sessions/current/summary").json()
+    expected = summary["cash_drawer"]["expected_in_drawer"]
+
+    # Close with 500 short
+    res = owner_client.post(
+        "/sessions/close",
+        params={
+            "closing_balance": expected - 500,
+            "discrepancy_reason": "Cashier miscounted",
+        },
+    )
+    assert res.status_code == 200
+    data = res.json()["session"]
+    assert data["expected_closing_balance"] == expected
+    assert data["cash_discrepancy"] == -500.0
+    assert data["discrepancy_reason"] == "Cashier miscounted"
+
+
+def test_close_requires_reason_when_short(owner_client):
+    """Closing with a short/over amount and no reason → 400."""
+    owner_client.post("/sessions/open?opening_balance=10000")
+    summary = owner_client.get("/sessions/current/summary").json()
+    expected = summary["cash_drawer"]["expected_in_drawer"]
+
+    res = owner_client.post(
+        "/sessions/close",
+        params={"closing_balance": expected - 500},
+    )
+    assert res.status_code == 400
+    assert "discrepancy_reason" in res.json()["detail"].lower() or "short" in res.json()["detail"].lower()
+
+
+def test_cash_out_and_in_affect_expected(owner_client):
+    """Cash out/in adjust the expected drawer."""
+    owner_client.post("/sessions/open?opening_balance=10000")
+    before = owner_client.get("/sessions/current/summary").json()["cash_drawer"]["expected_in_drawer"]
+
+    owner_client.post("/sessions/current/cash-out", json={"amount": 2000, "reason": "Bank"})
+    after_out = owner_client.get("/sessions/current/summary").json()["cash_drawer"]["expected_in_drawer"]
+    assert after_out == before - 2000
+
+    owner_client.post("/sessions/current/cash-in", json={"amount": 500, "reason": "Float"})
+    after_in = owner_client.get("/sessions/current/summary").json()["cash_drawer"]["expected_in_drawer"]
+    assert after_in == after_out + 500
+
+
+def test_session_detail_lists_items(owner_client, sample_product):
+    """Detail returns sales + expenses + payments."""
+    owner_client.post("/sessions/open?opening_balance=0")
+    owner_client.post(
+        "/sales/",
+        json={"items": [{"product_id": sample_product["id"], "quantity": 1}]},
+    )
+    owner_client.post("/expenses/", json={"name": "Tea", "amount": 300, "category": "Food"})
+
+    cur = owner_client.get("/sessions/current").json()
+    sid = cur["id"]
+
+    res = owner_client.get(f"/sessions/{sid}/detail")
+    assert res.status_code == 200
+    data = res.json()
+    assert len(data["sales"]) == 1
+    assert len(data["expenses"]) == 1
+    assert data["sales"][0]["items"][0]["quantity"] == 1
+
+
+def test_sessions_list_includes_reconciliation_status(owner_client):
+    """List endpoint annotates status."""
+    owner_client.post("/sessions/open?opening_balance=1000")
+    summary = owner_client.get("/sessions/current/summary").json()
+    expected = summary["cash_drawer"]["expected_in_drawer"]
+
+    owner_client.post(
+        "/sessions/close",
+        params={"closing_balance": expected, "discrepancy_reason": ""},
+    )
+
+    res = owner_client.get("/sessions/")
+    assert res.status_code == 200
+    sessions = res.json()
+    assert len(sessions) >= 1
+    assert sessions[0]["reconciliation_status"] == "balanced"

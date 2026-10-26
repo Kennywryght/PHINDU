@@ -1,8 +1,21 @@
 <script>
-  import { onMount } from "svelte";
-  import { Search, UserPlus, ShoppingCart, PackageX, CheckCircle2, Layers } from "lucide-svelte";
+  import { onMount, onDestroy, tick } from "svelte";
+  import {
+    Search,
+    UserPlus,
+    ShoppingCart,
+    PackageX,
+    CheckCircle2,
+    Layers,
+    ScanBarcode,
+    X,
+    Wallet,
+    CreditCard,
+    AlertTriangle,
+  } from "lucide-svelte";
   import Layout from "../components/Layout.svelte";
   import CartItem from "../components/CartItem.svelte";
+  import Receipt from "../components/Receipt.svelte";
   import API from "../api/api";
 
   let products = [];
@@ -11,47 +24,256 @@
   let searchTerm = "";
   let loading = false;
 
+  // Cash tender / change
+  let cashGiven = 0;
+
+  // Scan input refs
+  let scanInputEl;
+
+  // Credit mode
   let isCreditSale = false;
   let selectedCustomerId = null;
   let showNewCustomerModal = false;
   let newCustomer = { name: "", phone: "", email: "", address: "" };
 
-  let checkoutSuccess = false;
+  // Customer autocomplete state
+  let customerSearch = "";
+  let customerDropdownOpen = false;
+  const AUTOCOMPLETE_THRESHOLD = 30; // show search UI when >= this many customers
 
-  // Variant picker modal
+  // Success + receipt
+  let checkoutSuccess = false;
+  let pendingReceipt = null;
+  let showReceipt = false;
+
+  // Variant picker
   let showVariantPicker = false;
   let variantParent = null;
   let variantList = [];
   let loadingVariants = false;
 
+  // Session state
+  let sessionActive = true; // optimistic; we fetch on mount
+  let sessionChecked = false;
+
+  // Modal stack tracking for back-button handling
+  // Any modal-opening action pushes a history entry; popstate closes it.
+  let modalHistoryDepth = 0;
+
+  // Toast
+  let toast = { visible: false, text: "", kind: "info" };
+  let toastTimer = null;
+
+  function showToast(text, kind = "info", ms = 2200) {
+    toast = { visible: true, text, kind };
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => (toast = { ...toast, visible: false }), ms);
+  }
+
+  // ── Session check ──
+  async function checkSession() {
+    try {
+      const res = await API.get("/sessions/current");
+      sessionActive = !!(res.data && res.data.id);
+    } catch {
+      // If the endpoint errors, don't block the POS — assume session exists
+      sessionActive = true;
+    } finally {
+      sessionChecked = true;
+    }
+  }
+
+  function requestOpenSession() {
+    window.dispatchEvent(new CustomEvent("phindu:open-session"));
+  }
+
+  // ── Back-button / modal handling ──
+  function pushModalHistory() {
+    if (typeof window === "undefined") return;
+    window.history.pushState({ posModal: true }, "");
+    modalHistoryDepth += 1;
+  }
+
+  function popModalHistory() {
+    if (typeof window === "undefined") return;
+    if (modalHistoryDepth > 0) {
+      modalHistoryDepth -= 1;
+      window.history.back();
+    }
+  }
+
+  function handlePopState() {
+    // A modal is open → close it
+    if (showVariantPicker) {
+      showVariantPicker = false;
+      variantParent = null;
+      variantList = [];
+      modalHistoryDepth = Math.max(0, modalHistoryDepth - 1);
+      return;
+    }
+    if (showNewCustomerModal) {
+      showNewCustomerModal = false;
+      modalHistoryDepth = Math.max(0, modalHistoryDepth - 1);
+      return;
+    }
+    if (showReceipt) {
+      showReceipt = false;
+      pendingReceipt = null;
+      checkoutSuccess = false;
+      modalHistoryDepth = Math.max(0, modalHistoryDepth - 1);
+      return;
+    }
+  }
+
+  // ── beforeunload guard ──
+  function handleBeforeUnload(e) {
+    if (cart.length > 0 && !checkoutSuccess) {
+      e.preventDefault();
+      e.returnValue = "";
+      return "";
+    }
+  }
+
   onMount(async () => {
-    const [productsRes, customersRes] = await Promise.all([
-      API.get("/products/"),
-      API.get("/customers/"),
-    ]);
-    products = productsRes.data.filter((p) => !p.archived && !p.is_deleted);
-    customers = customersRes.data;
+    await checkSession();
+
+    try {
+      const [productsRes, customersRes] = await Promise.all([
+        API.get("/products/?leaf_only=true"),
+        API.get("/customers/"),
+      ]);
+      products = (productsRes.data || []).filter(
+        (p) => !p.archived && !p.is_deleted
+      );
+      customers = customersRes.data || [];
+    } catch (err) {
+      console.error("Failed to load POS data — falling back", err);
+      try {
+        const [productsRes, customersRes] = await Promise.all([
+          API.get("/products/"),
+          API.get("/customers/"),
+        ]);
+        products = (productsRes.data || []).filter(
+          (p) => !p.archived && !p.is_deleted
+        );
+        customers = customersRes.data || [];
+      } catch (err2) {
+        console.error("Fallback fetch failed too", err2);
+      }
+    }
+
+    window.addEventListener("popstate", handlePopState);
+    window.addEventListener("beforeunload", handleBeforeUnload);
+
+    await tick();
+    if (scanInputEl) scanInputEl.focus();
+  });
+
+  onDestroy(() => {
+    if (typeof window === "undefined") return;
+    window.removeEventListener("popstate", handlePopState);
+    window.removeEventListener("beforeunload", handleBeforeUnload);
   });
 
   $: filteredProducts = products.filter((p) =>
-    p.name.toLowerCase().includes(searchTerm.toLowerCase())
+    p.name.toLowerCase().includes(searchTerm.trim().toLowerCase())
   );
 
-  function handleProductClick(product) {
+  // ── Customer filtered list ──
+  $: useCustomerAutocomplete = customers.length >= AUTOCOMPLETE_THRESHOLD;
+
+  $: filteredCustomers = useCustomerAutocomplete
+    ? customers.filter((c) => {
+        const q = customerSearch.trim().toLowerCase();
+        if (!q) return true;
+        return (
+          (c.name || "").toLowerCase().includes(q) ||
+          (c.phone || "").toLowerCase().includes(q)
+        );
+      })
+    : customers;
+
+  $: selectedCustomer = customers.find((c) => c.id === selectedCustomerId) || null;
+
+  function selectCustomer(c) {
+    selectedCustomerId = c.id;
+    customerSearch = c.name;
+    customerDropdownOpen = false;
+  }
+
+  function clearCustomer() {
+    selectedCustomerId = null;
+    customerSearch = "";
+  }
+
+  // ── Cart helpers ──
+  function cartQtyFor(id) {
+    return cart.find((i) => i.id === id)?.qty || 0;
+  }
+
+  function addToCart(product, qty = 1) {
+    if (product.stock_qty <= 0) return;
+
+    const existing = cart.find((item) => item.id === product.id);
+    const currentQty = existing?.qty || 0;
+    const newQty = currentQty + qty;
+
+    if (newQty > product.stock_qty) {
+      showToast(
+        `Only ${product.stock_qty} ${product.unit || "unit"} in stock`,
+        "warn"
+      );
+      const capped = product.stock_qty;
+      if (capped > currentQty) {
+        cart = cart.map((i) =>
+          i.id === product.id ? { ...i, qty: capped } : i
+        );
+      }
+      return;
+    }
+
+    if (existing) {
+      cart = cart.map((i) =>
+        i.id === product.id ? { ...i, qty: newQty } : i
+      );
+    } else {
+      cart = [...cart, { ...product, qty }];
+    }
+    if (scanInputEl) scanInputEl.focus();
+  }
+
+  function updateQty(id, qty) {
+    const product = products.find((p) => p.id === id);
+    const max = product?.stock_qty ?? qty;
+    const clamped = Math.max(1, Math.min(qty, max));
+    cart = cart.map((item) =>
+      item.id === id ? { ...item, qty: clamped } : item
+    );
+  }
+
+  function removeFromCart(id) {
+    cart = cart.filter((item) => item.id !== id);
+  }
+
+  // ── Variant picker ──
+  async function handleProductClick(product) {
     if (product.is_parent && product.variant_count > 0) {
       openVariantPicker(product);
     } else if (product.stock_qty > 0) {
       addToCart(product);
+    } else {
+      showToast("Out of stock", "warn");
     }
   }
 
   async function openVariantPicker(parent) {
     variantParent = parent;
     showVariantPicker = true;
+    pushModalHistory();
     loadingVariants = true;
     try {
       const res = await API.get(`/products/${parent.id}/variants`);
-      variantList = res.data.filter((v) => v.stock_qty > 0);
+      variantList = (res.data || []).filter((v) => v.stock_qty > 0);
     } catch (err) {
       console.error("Failed to load variants", err);
       variantList = [];
@@ -61,94 +283,251 @@
   }
 
   function selectVariant(variant) {
-    const fullVariant = products.find((p) => p.id === variant.id);
-    if (fullVariant) {
-      addToCart(fullVariant);
-    }
-    showVariantPicker = false;
-    variantParent = null;
+    const full = products.find((p) => p.id === variant.id);
+    if (full) addToCart(full);
+    closeVariantPicker(true);
   }
 
-  function closeVariantPicker() {
+  function closeVariantPicker(viaButton = false) {
     showVariantPicker = false;
     variantParent = null;
+    variantList = [];
+    if (viaButton) popModalHistory();
   }
 
-  function addToCart(product) {
-    const existing = cart.find((item) => item.id === product.id);
-    if (existing) {
-      existing.qty += 1;
-      cart = [...cart];
+  // ── Totals ──
+  $: total = cart.reduce(
+    (sum, item) => sum + Number(item.selling_price || 0) * item.qty,
+    0
+  );
+
+  $: change = Math.max(0, Number(cashGiven || 0) - total);
+  $: shortBy = Math.max(0, total - Number(cashGiven || 0));
+  $: cashIsEnough = !isCreditSale && Number(cashGiven || 0) >= total;
+
+  // ── Keyboard / scan ──
+  function handleScanKeydown(e) {
+    if (e.key !== "Enter") return;
+    const raw = (e.target.value || "").trim();
+    if (!raw) return;
+
+    const exact = products.find(
+      (p) => p.name.toLowerCase() === raw.toLowerCase()
+    );
+    const partial = products.filter((p) =>
+      p.name.toLowerCase().includes(raw.toLowerCase())
+    );
+
+    if (exact) {
+      addToCart(exact);
+      e.target.value = "";
+    } else if (partial.length === 1) {
+      addToCart(partial[0]);
+      e.target.value = "";
+    } else if (partial.length > 1) {
+      searchTerm = raw;
+      e.target.value = "";
+      showToast(`${partial.length} matches — pick one`, "info");
     } else {
-      cart = [...cart, { ...product, qty: 1 }];
+      showToast(`No product for scan: "${raw}"`, "warn");
+      e.target.value = "";
     }
   }
 
-  function updateQty(id, qty) {
-    cart = cart.map((item) => (item.id === id ? { ...item, qty } : item));
+  function handleSearchEnter(e) {
+    if (e.key !== "Enter") return;
+    const first = filteredProducts.find(
+      (p) => p.stock_qty > 0 || p.is_parent
+    );
+    if (first) {
+      addToCart(first);
+      searchTerm = "";
+    }
   }
 
-  function removeFromCart(id) {
-    cart = cart.filter((item) => item.id !== id);
-  }
-
-  $: total = cart.reduce((sum, item) => sum + item.selling_price * item.qty, 0);
-
+  // ── Checkout ──
   async function checkout() {
     if (cart.length === 0) return;
     if (isCreditSale && !selectedCustomerId) {
-      alert("Please select a customer for credit sale");
+      showToast("Please select a customer for credit sale", "warn");
       return;
     }
     loading = true;
+    checkoutSuccess = false;
+
+    const saleItems = cart.map((item) => ({ id: item.id, qty: item.qty }));
+    const totalAtCheckout = total;
+    const tendered = isCreditSale ? 0 : Number(cashGiven || 0);
+
     try {
       const payload = {
-        items: cart.map((item) => ({ id: item.id, qty: item.qty })),
+        items: saleItems,
         customer_id: isCreditSale ? selectedCustomerId : null,
         payment_status: isCreditSale ? "unpaid" : "paid",
-        amount_paid: isCreditSale ? 0 : total,
+        amount_paid: isCreditSale ? 0 : totalAtCheckout,
       };
-      await API.post("/sales/bulk", payload);
 
-      checkoutSuccess = true;
-      setTimeout(() => (checkoutSuccess = false), 2000);
+      const res = await API.post("/sales/bulk", payload);
+      const saleId = res.data?.sale_id || null;
+
+      const receiptItems = cart.map((i) => ({
+        name: i.name,
+        qty: i.qty,
+        selling_price: i.selling_price,
+      }));
+
+      pendingReceipt = {
+        sale: {
+          id: saleId,
+          total_amount: totalAtCheckout,
+          payment_status: isCreditSale ? "unpaid" : "paid",
+        },
+        items: receiptItems,
+        change: isCreditSale ? 0 : Math.max(0, tendered - totalAtCheckout),
+        amountTendered: isCreditSale ? null : tendered || null,
+      };
 
       cart = [];
       isCreditSale = false;
       selectedCustomerId = null;
+      customerSearch = "";
+      cashGiven = 0;
+      checkoutSuccess = true;
+
+      refreshProducts();
+      // Re-check session: if the owner opened one in another tab,
+      // the banner will disappear after the next sale.
+      checkSession();
+
+      showReceipt = true;
+      pushModalHistory();
     } catch (err) {
-      alert("Checkout failed: " + (err.response?.data?.detail || "Unknown error"));
+      showToast(
+        "Checkout failed: " + (err.response?.data?.detail || "Unknown error"),
+        "error",
+        3500
+      );
     } finally {
       loading = false;
     }
   }
 
+  async function refreshProducts() {
+    try {
+      const res = await API.get("/products/?leaf_only=true");
+      products = (res.data || []).filter((p) => !p.archived && !p.is_deleted);
+    } catch (err) {
+      console.error("Silent refresh failed", err);
+    }
+  }
+
+  function closeReceipt() {
+    showReceipt = false;
+    pendingReceipt = null;
+    checkoutSuccess = false;
+    popModalHistory();
+    if (scanInputEl) scanInputEl.focus();
+  }
+
+  function startNewSale() {
+    checkoutSuccess = false;
+    if (scanInputEl) scanInputEl.focus();
+  }
+
+  // ── Customer ──
   async function createCustomer() {
     if (!newCustomer.name) return;
     try {
       const res = await API.post("/customers/", newCustomer);
       customers = [...customers, res.data];
       selectedCustomerId = res.data.id;
+      customerSearch = res.data.name;
       showNewCustomerModal = false;
       newCustomer = { name: "", phone: "", email: "", address: "" };
+      showToast("Customer added", "success");
+      popModalHistory();
     } catch {
-      alert("Failed to create customer");
+      showToast("Failed to create customer", "error");
     }
+  }
+
+  function openCustomerModal() {
+    showNewCustomerModal = true;
+    pushModalHistory();
   }
 
   function closeCustomerModal() {
     showNewCustomerModal = false;
+    popModalHistory();
+  }
+
+  // ── Cash quick-fill ──
+  function quickCash(amount) {
+    cashGiven = Number(cashGiven || 0) + amount;
+  }
+
+  function exactCash() {
+    cashGiven = total;
   }
 </script>
 
 <Layout title="Point of Sale">
   <div class="pos-container">
     <div class="product-section">
+      <!-- Session warning banner -->
+      {#if sessionChecked && !sessionActive}
+        <div class="session-banner" role="alert">
+          <div class="session-banner-icon">
+            <AlertTriangle size={20} strokeWidth={2} />
+          </div>
+          <div class="session-banner-body">
+            <strong>No session is open</strong>
+            <span>
+              Sales won't be tracked in a cash drawer until you open one.
+            </span>
+          </div>
+          <button
+            type="button"
+            class="session-banner-cta"
+            on:click={requestOpenSession}
+          >
+            Open Session →
+          </button>
+        </div>
+      {/if}
+
+      <!-- Hidden scanner input -->
+      <input
+        bind:this={scanInputEl}
+        class="scan-input"
+        type="text"
+        placeholder=""
+        on:keydown={handleScanKeydown}
+        autocomplete="off"
+        aria-label="Barcode scanner input"
+      />
+
       <div class="search-bar">
         <span class="search-icon-wrap">
-          <Search size={18} strokeWidth={2} />
+          <ScanBarcode size={18} strokeWidth={2} />
         </span>
-        <input type="text" placeholder="Search products..." bind:value={searchTerm} />
+        <input
+          type="text"
+          placeholder="Scan barcode or search… (Enter to add first match)"
+          bind:value={searchTerm}
+          on:keydown={handleSearchEnter}
+          autocomplete="off"
+        />
+        {#if searchTerm}
+          <button
+            type="button"
+            class="search-clear"
+            on:click={() => (searchTerm = "")}
+            aria-label="Clear search"
+          >
+            <X size={14} strokeWidth={2} />
+          </button>
+        {/if}
       </div>
 
       {#if filteredProducts.length === 0}
@@ -161,14 +540,19 @@
           {#each filteredProducts as product}
             {@const isParentWithVariants = product.is_parent && product.variant_count > 0}
             {@const isOutOfStock = !isParentWithVariants && product.stock_qty <= 0}
+            {@const inCartQty = cartQtyFor(product.id)}
             <button
               class="product-card"
               class:parent-card={isParentWithVariants}
               class:out-of-stock={isOutOfStock}
+              class:in-cart={inCartQty > 0}
               on:click={() => handleProductClick(product)}
               disabled={isOutOfStock}
               type="button"
             >
+              {#if inCartQty > 0}
+                <span class="in-cart-badge">{inCartQty}</span>
+              {/if}
               <div class="product-name">
                 {#if isParentWithVariants}
                   <Layers size={12} strokeWidth={2.5} class="layer-icon" />
@@ -179,8 +563,16 @@
                 <div class="product-price">{product.variant_count} variants</div>
                 <div class="product-stock">Tap to choose</div>
               {:else}
-                <div class="product-price">MWK {product.selling_price?.toLocaleString()}</div>
-                <div class="product-stock">Stock: {product.stock_qty}</div>
+                <div class="product-price">
+                  MWK {product.selling_price?.toLocaleString()}
+                </div>
+                <div class="product-stock">
+                  {#if isOutOfStock}
+                    Out of stock
+                  {:else}
+                    Stock: {product.stock_qty}
+                  {/if}
+                </div>
               {/if}
             </button>
           {/each}
@@ -194,6 +586,9 @@
           <ShoppingCart size={18} strokeWidth={2} />
           Current Sale
         </h2>
+        {#if cart.length > 0}
+          <span class="cart-count">{cart.length} item{cart.length === 1 ? "" : "s"}</span>
+        {/if}
       </div>
 
       {#if cart.length === 0}
@@ -211,65 +606,191 @@
             />
           {/each}
         </div>
-        <div class="cart-total">
-          <span>Total:</span>
-          <strong>MWK {total.toLocaleString()}</strong>
-        </div>
       {/if}
 
-      <div class="credit-section">
-        <label class="credit-toggle">
-          <input type="checkbox" bind:checked={isCreditSale} />
-          <span>Credit Sale (Loan)</span>
-        </label>
+      <div class="cart-footer">
+        <div class="cart-total">
+          <span>Total</span>
+          <strong>MWK {total.toLocaleString()}</strong>
+        </div>
 
-        {#if isCreditSale}
-          <div class="customer-selector">
-            <select bind:value={selectedCustomerId}>
-              <option value={null}>-- Select customer --</option>
-              {#each customers as c}
-                <option value={c.id}>{c.name}{c.phone ? ` (${c.phone})` : ""}</option>
-              {/each}
-            </select>
-            <button
-              class="btn btn-sm btn-outline"
-              on:click={() => (showNewCustomerModal = true)}
-              type="button"
-            >
-              <UserPlus size={14} strokeWidth={2} />
-              <span>New</span>
-            </button>
-          </div>
+        <div class="credit-section">
+          <label class="credit-toggle">
+            <input type="checkbox" bind:checked={isCreditSale} />
+            <span>
+              <CreditCard size={14} strokeWidth={2} /> Credit sale (loan)
+            </span>
+          </label>
+
+          {#if isCreditSale}
+            {#if useCustomerAutocomplete}
+              <!-- Autocomplete UI -->
+              <div class="customer-autocomplete">
+                {#if selectedCustomer}
+                  <div class="selected-customer">
+                    <div class="selected-customer-info">
+                      <strong>{selectedCustomer.name}</strong>
+                      {#if selectedCustomer.phone}
+                        <span class="selected-customer-phone">{selectedCustomer.phone}</span>
+                      {/if}
+                    </div>
+                    <button
+                      type="button"
+                      class="selected-customer-clear"
+                      on:click={clearCustomer}
+                      aria-label="Clear customer"
+                    >
+                      <X size={14} strokeWidth={2} />
+                    </button>
+                  </div>
+                {:else}
+                  <div class="customer-search-wrap">
+                    <input
+                      type="text"
+                      placeholder="Search customer by name or phone…"
+                      bind:value={customerSearch}
+                      on:focus={() => (customerDropdownOpen = true)}
+                      on:blur={() => setTimeout(() => (customerDropdownOpen = false), 180)}
+                      autocomplete="off"
+                    />
+                    {#if customerDropdownOpen}
+                      <div class="customer-dropdown">
+                        {#if filteredCustomers.length === 0}
+                          <div class="customer-empty">No matches</div>
+                        {:else}
+                          {#each filteredCustomers.slice(0, 20) as c}
+                            <button
+                              type="button"
+                              class="customer-option"
+                              on:click={() => selectCustomer(c)}
+                            >
+                              <span class="customer-opt-name">{c.name}</span>
+                              {#if c.phone}
+                                <span class="customer-opt-phone">{c.phone}</span>
+                              {/if}
+                            </button>
+                          {/each}
+                        {/if}
+                      </div>
+                    {/if}
+                  </div>
+                {/if}
+                <button
+                  class="btn btn-sm btn-outline"
+                  on:click={openCustomerModal}
+                  type="button"
+                >
+                  <UserPlus size={14} strokeWidth={2} />
+                  <span>New</span>
+                </button>
+              </div>
+            {:else}
+              <!-- Plain select for small shops -->
+              <div class="customer-selector">
+                <select bind:value={selectedCustomerId}>
+                  <option value={null}>-- Select customer --</option>
+                  {#each customers as c}
+                    <option value={c.id}>
+                      {c.name}{c.phone ? ` (${c.phone})` : ""}
+                    </option>
+                  {/each}
+                </select>
+                <button
+                  class="btn btn-sm btn-outline"
+                  on:click={openCustomerModal}
+                  type="button"
+                >
+                  <UserPlus size={14} strokeWidth={2} />
+                  <span>New</span>
+                </button>
+              </div>
+            {/if}
+          {:else}
+            <div class="cash-block">
+              <div class="cash-label">
+                <Wallet size={14} strokeWidth={2} />
+                <span>Cash given</span>
+              </div>
+              <div class="cash-input-row">
+                <input
+                  type="number"
+                  min="0"
+                  step="100"
+                  bind:value={cashGiven}
+                  placeholder="0"
+                />
+                <button
+                  class="quick-cash-btn"
+                  type="button"
+                  on:click={exactCash}
+                  title="Exact amount"
+                >
+                  Exact
+                </button>
+              </div>
+              <div class="cash-quick-btns">
+                <button type="button" on:click={() => quickCash(500)}>+500</button>
+                <button type="button" on:click={() => quickCash(1000)}>+1k</button>
+                <button type="button" on:click={() => quickCash(2000)}>+2k</button>
+                <button type="button" on:click={() => quickCash(5000)}>+5k</button>
+              </div>
+
+              {#if Number(cashGiven) > 0}
+                <div class="cash-result {cashIsEnough ? 'ok' : 'short'}">
+                  {#if cashIsEnough}
+                    <span>Change</span>
+                    <strong>MWK {change.toLocaleString()}</strong>
+                  {:else}
+                    <span>Short by</span>
+                    <strong>MWK {shortBy.toLocaleString()}</strong>
+                  {/if}
+                </div>
+              {/if}
+            </div>
+          {/if}
+        </div>
+
+        <button
+          class="checkout-btn"
+          class:success={checkoutSuccess}
+          on:click={checkoutSuccess ? startNewSale : checkout}
+          disabled={loading ||
+            (cart.length === 0 && !checkoutSuccess) ||
+            (Number(cashGiven) > 0 && !cashIsEnough && !isCreditSale && cart.length > 0)}
+          type="button"
+        >
+          {#if checkoutSuccess}
+            <CheckCircle2 size={18} strokeWidth={2} /> Sale completed — New Sale
+          {:else if loading}
+            <span class="spinner"></span> Processing…
+          {:else}
+            <ShoppingCart size={18} strokeWidth={2} /> Complete Sale — MWK {total.toLocaleString()}
+          {/if}
+        </button>
+
+        {#if cart.length === 0 && !checkoutSuccess}
+          <p class="empty-hint">Tap a product above to start a sale.</p>
         {/if}
       </div>
-
-      <button
-        class="checkout-btn"
-        class:success={checkoutSuccess}
-        on:click={checkout}
-        disabled={loading || cart.length === 0}
-        type="button"
-      >
-        {#if checkoutSuccess}
-          <CheckCircle2 size={18} strokeWidth={2} /> Sale completed!
-        {:else if loading}
-          <span class="spinner"></span> Processing...
-        {:else}
-          <ShoppingCart size={18} strokeWidth={2} /> Complete Sale — MWK {total.toLocaleString()}
-        {/if}
-      </button>
     </div>
   </div>
 
-  <!-- VARIANT PICKER MODAL -->
+  <!-- Toast -->
+  {#if toast.visible}
+    <div class="toast toast-{toast.kind}" role="status">
+      {toast.text}
+    </div>
+  {/if}
+
+  <!-- VARIANT PICKER -->
   {#if showVariantPicker}
     <div
       class="modal-overlay"
       role="dialog"
       aria-modal="true"
       tabindex="-1"
-      on:click|self={closeVariantPicker}
-      on:keydown={(e) => e.key === "Escape" && closeVariantPicker()}
+      on:click|self={() => closeVariantPicker(true)}
+      on:keydown={(e) => e.key === "Escape" && closeVariantPicker(true)}
     >
       <div class="modal">
         <h3>
@@ -277,7 +798,7 @@
           Choose {variantParent?.name} Variant
         </h3>
         {#if loadingVariants}
-          <p class="picker-hint">Loading variants...</p>
+          <p class="picker-hint">Loading variants…</p>
         {:else if variantList.length === 0}
           <p class="picker-hint">No variants in stock. Restock first.</p>
         {:else}
@@ -290,15 +811,23 @@
               >
                 <div class="variant-info">
                   <div class="variant-name">{variant.name}</div>
-                  <div class="variant-meta">Stock: {variant.stock_qty} {variant.unit}</div>
+                  <div class="variant-meta">
+                    Stock: {variant.stock_qty} {variant.unit}
+                  </div>
                 </div>
-                <div class="variant-price">MWK {variant.selling_price?.toLocaleString()}</div>
+                <div class="variant-price">
+                  MWK {variant.selling_price?.toLocaleString()}
+                </div>
               </button>
             {/each}
           </div>
         {/if}
         <div class="modal-actions">
-          <button class="btn btn-secondary" on:click={closeVariantPicker} type="button">
+          <button
+            class="btn btn-secondary"
+            on:click={() => closeVariantPicker(true)}
+            type="button"
+          >
             Cancel
           </button>
         </div>
@@ -306,7 +835,7 @@
     </div>
   {/if}
 
-  <!-- NEW CUSTOMER MODAL -->
+  <!-- NEW CUSTOMER -->
   {#if showNewCustomerModal}
     <div
       class="modal-overlay"
@@ -335,7 +864,9 @@
           <input id="cust-address" type="text" bind:value={newCustomer.address} />
         </div>
         <div class="modal-actions">
-          <button class="btn btn-secondary" on:click={closeCustomerModal} type="button">Cancel</button>
+          <button class="btn btn-secondary" on:click={closeCustomerModal} type="button">
+            Cancel
+          </button>
           <button
             class="btn btn-primary"
             on:click={createCustomer}
@@ -348,9 +879,81 @@
       </div>
     </div>
   {/if}
+
+  <!-- RECEIPT -->
+  {#if showReceipt && pendingReceipt}
+    <Receipt
+      sale={pendingReceipt.sale}
+      items={pendingReceipt.items}
+      change={pendingReceipt.change}
+      amountTendered={pendingReceipt.amountTendered}
+      on:close={closeReceipt}
+    />
+  {/if}
 </Layout>
 
 <style>
+  /* ── Session banner ── */
+  .session-banner {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    background: linear-gradient(135deg, #fffbeb 0%, #ffffff 100%);
+    border: 1px solid #fcd34d;
+    border-left: 4px solid #d97706;
+    border-radius: 10px;
+    padding: 0.75rem 0.95rem;
+    margin-bottom: 0.9rem;
+    flex-wrap: wrap;
+  }
+  .session-banner-icon {
+    color: #b45309;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+  }
+  .session-banner-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    font-size: 0.85rem;
+  }
+  .session-banner-body strong {
+    color: #92400e;
+    font-weight: 600;
+  }
+  .session-banner-body span {
+    color: #78350f;
+    font-size: 0.78rem;
+  }
+  .session-banner-cta {
+    border: none;
+    background: #d97706;
+    color: white;
+    border-radius: 8px;
+    padding: 0.5rem 0.85rem;
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .session-banner-cta:hover {
+    background: #b45309;
+  }
+
+  /* ── Hidden scanner input ── */
+  .scan-input {
+    position: absolute;
+    left: -9999px;
+    top: 0;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+  }
+
   .pos-container {
     display: grid;
     grid-template-columns: 1fr 380px;
@@ -385,7 +988,7 @@
 
   .search-bar input {
     width: 100%;
-    padding: 0.75rem 1rem 0.75rem 2.75rem;
+    padding: 0.75rem 2.5rem 0.75rem 2.75rem;
     font-size: 0.95rem;
     border: 1px solid var(--border, #e5e7eb);
     border-radius: 10px;
@@ -400,6 +1003,24 @@
     box-shadow: 0 0 0 3px rgba(15, 107, 62, 0.1);
   }
 
+  .search-clear {
+    position: absolute;
+    right: 0.65rem;
+    top: 50%;
+    transform: translateY(-50%);
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    color: #94a3b8;
+    padding: 0.25rem;
+    border-radius: 4px;
+    line-height: 0;
+  }
+  .search-clear:hover {
+    color: var(--text, #111827);
+    background: var(--background, #f9fafb);
+  }
+
   .product-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -410,6 +1031,7 @@
   }
 
   .product-card {
+    position: relative;
     background: var(--surface, #fff);
     border: 1px solid var(--border, #e5e7eb);
     border-radius: 10px;
@@ -430,13 +1052,36 @@
     transform: translateY(-1px);
   }
 
+  .product-card.in-cart {
+    border-color: var(--primary, #0f6b3e);
+    background: #f0fdf4;
+  }
+
   .parent-card {
     border-left: 3px solid var(--primary, #0f6b3e);
   }
 
   .out-of-stock {
-    opacity: 0.5;
+    opacity: 0.55;
     cursor: not-allowed;
+  }
+
+  .in-cart-badge {
+    position: absolute;
+    top: 0.45rem;
+    right: 0.45rem;
+    background: var(--primary, #0f6b3e);
+    color: white;
+    font-size: 0.7rem;
+    font-weight: 700;
+    min-width: 20px;
+    height: 20px;
+    border-radius: 10px;
+    padding: 0 0.35rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
   }
 
   .product-name {
@@ -444,13 +1089,10 @@
     font-size: 0.88rem;
     color: var(--text, #111827);
     line-height: 1.3;
-    overflow: hidden;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
     display: flex;
     align-items: center;
     gap: 0.3rem;
+    overflow: hidden;
   }
 
   .layer-icon {
@@ -480,6 +1122,7 @@
     gap: 0.75rem;
   }
 
+  /* ── Cart ── */
   .cart-section {
     display: flex;
     flex-direction: column;
@@ -489,11 +1132,16 @@
     padding: 1rem;
     overflow: hidden;
     min-width: 0;
+    min-height: 0;
   }
 
   .cart-header {
     flex-shrink: 0;
     margin-bottom: 0.5rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.5rem;
   }
 
   .cart-header h2 {
@@ -506,12 +1154,19 @@
     color: var(--text, #111827);
   }
 
+  .cart-count {
+    font-size: 0.72rem;
+    color: var(--text-light, #6b7280);
+    font-weight: 500;
+  }
+
   .cart-items {
     flex: 1;
     overflow-y: auto;
-    margin: 0.75rem 0;
+    margin: 0.5rem 0;
     padding-right: 0.25rem;
     overscroll-behavior: contain;
+    min-height: 0;
   }
 
   .empty-cart {
@@ -525,27 +1180,42 @@
     padding: 2rem 1rem;
   }
 
+  .cart-footer {
+    flex-shrink: 0;
+    border-top: 2px solid var(--border, #e5e7eb);
+    padding-top: 0.75rem;
+    margin-top: 0.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.65rem;
+  }
+
   .cart-total {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 0.85rem 0;
-    border-top: 2px solid var(--border, #e5e7eb);
-    font-size: 1.1rem;
-    flex-shrink: 0;
+    font-size: 1rem;
+    color: var(--text-light, #6b7280);
   }
 
   .cart-total strong {
     color: var(--primary, #0f6b3e);
-    font-size: 1.3rem;
+    font-size: 1.4rem;
+    font-weight: 700;
+  }
+
+  .empty-hint {
+    margin: 0;
+    text-align: center;
+    font-size: 0.78rem;
+    color: var(--text-light, #6b7280);
+    padding-top: 0.25rem;
   }
 
   .credit-section {
-    margin: 0.75rem 0;
-    padding: 0.75rem;
+    padding: 0.6rem 0.75rem;
     background: var(--background, #f9fafb);
     border-radius: 10px;
-    flex-shrink: 0;
   }
 
   .credit-toggle {
@@ -553,7 +1223,7 @@
     align-items: center;
     gap: 0.5rem;
     cursor: pointer;
-    font-size: 0.9rem;
+    font-size: 0.85rem;
     font-weight: 500;
     color: var(--text, #111827);
   }
@@ -561,12 +1231,19 @@
   .credit-toggle input {
     width: auto;
     cursor: pointer;
+    accent-color: var(--primary, #0f6b3e);
+  }
+
+  .credit-toggle span {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
   }
 
   .customer-selector {
     display: flex;
     gap: 0.4rem;
-    margin-top: 0.6rem;
+    margin-top: 0.55rem;
   }
 
   .customer-selector select {
@@ -578,6 +1255,238 @@
     color: var(--text, #111827);
     font-size: 0.85rem;
     min-width: 0;
+  }
+
+  /* ── Customer autocomplete ── */
+  .customer-autocomplete {
+    display: flex;
+    gap: 0.4rem;
+    margin-top: 0.55rem;
+    align-items: flex-start;
+  }
+
+  .selected-customer {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.5rem 0.65rem;
+    background: #eef2ff;
+    border: 1px solid #c7d2fe;
+    border-radius: 8px;
+    min-width: 0;
+  }
+
+  .selected-customer-info {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    gap: 0.1rem;
+  }
+
+  .selected-customer-info strong {
+    font-size: 0.85rem;
+    color: #3730a3;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .selected-customer-phone {
+    font-size: 0.72rem;
+    color: #4f46e5;
+  }
+
+  .selected-customer-clear {
+    border: none;
+    background: transparent;
+    color: #4f46e5;
+    cursor: pointer;
+    padding: 0.2rem;
+    border-radius: 4px;
+    line-height: 0;
+    flex-shrink: 0;
+  }
+  .selected-customer-clear:hover {
+    background: #e0e7ff;
+  }
+
+  .customer-search-wrap {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .customer-search-wrap input {
+    width: 100%;
+    padding: 0.5rem 0.65rem;
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+    background: var(--surface, #fff);
+    color: var(--text, #111827);
+    font-size: 0.85rem;
+    box-sizing: border-box;
+  }
+
+  .customer-search-wrap input:focus {
+    outline: none;
+    border-color: var(--primary, #0f6b3e);
+    box-shadow: 0 0 0 3px rgba(15, 107, 62, 0.1);
+  }
+
+  .customer-dropdown {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.15);
+    max-height: 220px;
+    overflow-y: auto;
+    z-index: 50;
+  }
+
+  .customer-option {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    width: 100%;
+    text-align: left;
+    padding: 0.5rem 0.7rem;
+    border: none;
+    background: transparent;
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    cursor: pointer;
+    font-size: 0.85rem;
+  }
+  .customer-option:last-child {
+    border-bottom: none;
+  }
+  .customer-option:hover {
+    background: var(--background, #f9fafb);
+  }
+  .customer-opt-name {
+    font-weight: 500;
+    color: var(--text, #111827);
+  }
+  .customer-opt-phone {
+    font-size: 0.72rem;
+    color: var(--text-light, #6b7280);
+  }
+
+  .customer-empty {
+    padding: 0.65rem 0.7rem;
+    text-align: center;
+    font-size: 0.82rem;
+    color: var(--text-light, #6b7280);
+  }
+
+  .cash-block {
+    margin-top: 0.65rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .cash-label {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--text-light, #6b7280);
+  }
+
+  .cash-input-row {
+    display: flex;
+    gap: 0.4rem;
+  }
+
+  .cash-input-row input {
+    flex: 1;
+    padding: 0.55rem 0.7rem;
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+    background: var(--surface, #fff);
+    color: var(--text, #111827);
+    font-size: 1rem;
+    font-weight: 600;
+    box-sizing: border-box;
+    min-width: 0;
+  }
+
+  .cash-input-row input:focus {
+    outline: none;
+    border-color: var(--primary, #0f6b3e);
+    box-shadow: 0 0 0 3px rgba(15, 107, 62, 0.1);
+  }
+
+  .quick-cash-btn {
+    padding: 0 0.75rem;
+    border: 1px solid var(--primary, #0f6b3e);
+    background: transparent;
+    color: var(--primary, #0f6b3e);
+    border-radius: 8px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .quick-cash-btn:hover {
+    background: var(--primary, #0f6b3e);
+    color: white;
+  }
+
+  .cash-quick-btns {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0.3rem;
+  }
+
+  .cash-quick-btns button {
+    padding: 0.4rem;
+    border: 1px solid var(--border, #e5e7eb);
+    background: var(--surface, #fff);
+    color: var(--text, #111827);
+    border-radius: 6px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .cash-quick-btns button:hover {
+    border-color: var(--primary, #0f6b3e);
+    color: var(--primary, #0f6b3e);
+  }
+
+  .cash-result {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0.65rem;
+    border-radius: 8px;
+    font-size: 0.85rem;
+  }
+
+  .cash-result.ok {
+    background: #f0fdf4;
+    color: #166534;
+    border: 1px solid #86efac;
+  }
+
+  .cash-result.short {
+    background: #fef2f2;
+    color: #b91c1c;
+    border: 1px solid #fecaca;
+  }
+
+  .cash-result strong {
+    font-size: 1rem;
+    font-weight: 700;
   }
 
   .checkout-btn {
@@ -595,7 +1504,6 @@
     border-radius: 10px;
     cursor: pointer;
     transition: all 0.15s;
-    flex-shrink: 0;
   }
 
   .checkout-btn:hover:not(:disabled) {
@@ -626,6 +1534,42 @@
     }
   }
 
+  /* ── Toast ── */
+  .toast {
+    position: fixed;
+    top: 1rem;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 0.7rem 1rem;
+    border-radius: 10px;
+    font-size: 0.88rem;
+    font-weight: 500;
+    z-index: 2000;
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.2);
+    max-width: 90vw;
+    text-align: center;
+  }
+  .toast-info {
+    background: #111827;
+    color: #fff;
+  }
+  .toast-warn {
+    background: #fef3c7;
+    color: #92400e;
+    border: 1px solid #fcd34d;
+  }
+  .toast-error {
+    background: #fee2e2;
+    color: #991b1b;
+    border: 1px solid #fecaca;
+  }
+  .toast-success {
+    background: #dcfce7;
+    color: #166534;
+    border: 1px solid #86efac;
+  }
+
+  /* ── Modals ── */
   .modal-overlay {
     position: fixed;
     inset: 0;
@@ -798,6 +1742,7 @@
     font-size: 0.85rem;
   }
 
+  /* ── Responsive ── */
   @media (max-width: 1024px) {
     .pos-container {
       grid-template-columns: 1fr 320px;
@@ -812,16 +1757,25 @@
     }
 
     .product-grid {
-      max-height: 300px;
+      max-height: 340px;
     }
 
     .cart-section {
-      min-height: 320px;
-      max-height: 80vh;
+      min-height: 380px;
+      max-height: none;
+      overflow: visible;
     }
 
     .cart-items {
-      max-height: 260px;
+      max-height: 240px;
+    }
+
+    .cart-footer {
+      position: sticky;
+      bottom: 0;
+      background: var(--surface, #fff);
+      padding-top: 0.5rem;
+      z-index: 5;
     }
   }
 
@@ -829,7 +1783,7 @@
     .product-grid {
       grid-template-columns: repeat(2, 1fr);
       gap: 0.5rem;
-      max-height: 260px;
+      max-height: 300px;
     }
 
     .product-card {
@@ -847,6 +1801,22 @@
 
     .cart-total strong {
       font-size: 1.15rem;
+    }
+
+    .cash-quick-btns button {
+      font-size: 0.7rem;
+      padding: 0.35rem;
+    }
+
+    .session-banner {
+      padding: 0.6rem 0.75rem;
+    }
+    .session-banner-body {
+      font-size: 0.8rem;
+    }
+    .session-banner-cta {
+      width: 100%;
+      text-align: center;
     }
   }
 </style>

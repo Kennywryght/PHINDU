@@ -4,11 +4,26 @@
   export let prefix = "";
   export let suffix = "";
   export let highlight = false;
+  export let delta = null; // ← NEW: percentage number or null
 
   $: formattedValue =
     typeof value === "number"
       ? value.toLocaleString(undefined, { maximumFractionDigits: 2 })
       : value;
+
+  $: deltaClass =
+    delta === null || delta === undefined
+      ? null
+      : delta > 0
+      ? "positive"
+      : delta < 0
+      ? "negative"
+      : "flat";
+
+  $: deltaText =
+    delta === null || delta === undefined
+      ? ""
+      : `${delta > 0 ? "↑" : delta < 0 ? "↓" : "—"} ${Math.abs(delta)}%`;
 </script>
 
 <div class="metric-card" class:highlight>
@@ -18,6 +33,11 @@
     <span class="number">{formattedValue}</span>{#if suffix}<span class="suffix">{suffix}</span
       >{/if}
   </div>
+  {#if deltaClass}
+    <span class="delta {deltaClass}" title="vs yesterday">
+      {deltaText}
+    </span>
+  {/if}
 </div>
 
 <style>
@@ -82,6 +102,34 @@
     color: var(--success, #16a34a);
   }
 
+  /* ─── Delta pill ─── */
+  .delta {
+    display: inline-flex;
+    align-items: center;
+    margin-top: 0.4rem;
+    padding: 0.1rem 0.4rem;
+    font-size: 0.68rem;
+    font-weight: 600;
+    border-radius: 6px;
+    line-height: 1.4;
+    white-space: nowrap;
+  }
+
+  .delta.positive {
+    background: #dcfce7;
+    color: #15803d;
+  }
+
+  .delta.negative {
+    background: #fee2e2;
+    color: #b91c1c;
+  }
+
+  .delta.flat {
+    background: #f3f4f6;
+    color: #6b7280;
+  }
+
   /* ============ TABLET ============ */
   @media (max-width: 768px) {
     .metric-card {
@@ -95,6 +143,10 @@
     .number {
       font-size: clamp(0.9rem, 4.2vw, 1.35rem);
     }
+
+    .delta {
+      font-size: 0.64rem;
+    }
   }
 
   /* ============ MOBILE ============ */
@@ -107,7 +159,6 @@
       font-size: 0.68rem;
       margin-bottom: 0.3rem;
       line-height: 1.15;
-      /* allow 2 lines for long titles like "Avg Sale Value" */
       min-height: 1.5em;
     }
 
@@ -116,14 +167,17 @@
     }
 
     .number {
-      /* Key fix: shrink further so "3,500" / "125,000" fits.
-         On a 320px phone → 2 col → each ~140px inner → 0.85rem font
-         fits ~10 chars + prefix. Clean. */
       font-size: clamp(0.82rem, 3.9vw, 1.1rem);
     }
 
     .suffix {
       font-size: 0.65rem;
+    }
+
+    .delta {
+      font-size: 0.6rem;
+      padding: 0.08rem 0.35rem;
+      margin-top: 0.3rem;
     }
   }
 

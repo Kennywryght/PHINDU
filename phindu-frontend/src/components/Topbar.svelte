@@ -23,13 +23,23 @@
   onMount(() => {
     fetchCurrentSession();
     const interval = setInterval(fetchCurrentSession, 60000);
-    return () => clearInterval(interval);
+
+    // ── NEW: allow other pages (POS) to request the Open Session modal ──
+    function handleOpenSessionEvent() {
+      showSessionModal = true;
+    }
+    window.addEventListener("phindu:open-session", handleOpenSessionEvent);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("phindu:open-session", handleOpenSessionEvent);
+    };
   });
 
   async function fetchCurrentSession() {
     try {
       const res = await API.get("/sessions/current");
-      session = res.data.id ? res.data : null;
+      session = res.data && res.data.id ? res.data : null;
     } catch {
       session = null;
     }
@@ -65,13 +75,8 @@
   }
 
   function openProfile() {
-    // If you have a client-side router hook, prefer it:
-    if (window.navigate) {
-      window.navigate("/profile");
-    } else {
-      window.location.href = "/profile";
-    }
-    // Also emit for parent components that listen
+    if (window.navigate) window.navigate("/profile");
+    else window.location.href = "/profile";
     dispatch("profile");
   }
 </script>
@@ -228,7 +233,6 @@
     flex-shrink: 0;
   }
 
-  /* ─── Circular logo ─── */
   .logo-badge {
     display: inline-flex;
     align-items: center;
@@ -247,7 +251,7 @@
   .logo-img {
     width: 100%;
     height: 100%;
-    object-fit: cover; /* fills circle; use 'contain' if logo has transparent padding */
+    object-fit: cover;
     display: block;
     border-radius: 50%;
   }

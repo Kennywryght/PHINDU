@@ -1,15 +1,142 @@
+"""Dashboard routes: summary + today + health score + focus + cash flow + deltas + sparklines."""
+
+from datetime import datetime, timedelta
+
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, exists, func
+from sqlalchemy.orm import Session, aliased
 
 from app.api.dependencies import get_current_shop_id
+from app.db.models.customer import Customer
 from app.db.models.expense import Expense
-from app.db.models.product import Product  # 🔧 added for name lookup
+from app.db.models.payment import Payment
+from app.db.models.price_history import PriceHistory
+from app.db.models.product import Product
 from app.db.models.sale import Sale, SaleItem
 from app.db.models.session import Session as SessionModel
+from app.db.models.stock import StockBatch
 from app.db.session import get_db
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
+
+
+# ─── Helpers ─────────────────────────────────────────────────────
+
+
+def _today_utc_range():
+    now = datetime.utcnow()
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start, start + timedelta(days=1)
+
+
+def _leaf_products_query(db: Session, shop_id: str):
+    """
+    Base query for LEAF products (products with NO child variants).
+
+    Standalone products AND parent-with-variants products both have
+    parent_id IS NULL — the only reliable way to detect leaves is a
+    "no children exist" check.
+    """
+    child = aliased(Product)
+    return (
+        db.query(Product)
+        .filter(
+            Product.shop_id == shop_id,
+            Product.is_deleted == False,
+            Product.archived == False,
+            ~exists().where(
+                and_(
+                    child.parent_id == Product.id,
+                    child.shop_id == shop_id,
+                    child.is_deleted == False,
+                )
+            ),
+        )
+    )
+
+
+def _low_stock_count(db: Session, shop_id: str) -> int:
+    child = aliased(Product)
+    return (
+        db.query(func.count(Product.id))
+        .filter(
+            Product.shop_id == shop_id,
+            Product.is_deleted == False,
+            Product.archived == False,
+            Product.stock_qty <= Product.low_stock_threshold,
+            ~exists().where(
+                and_(
+                    child.parent_id == Product.id,
+                    child.shop_id == shop_id,
+                    child.is_deleted == False,
+                )
+            ),
+        )
+        .scalar()
+        or 0
+    )
+
+
+def _leaf_product_count(db: Session, shop_id: str) -> int:
+    child = aliased(Product)
+    return (
+        db.query(func.count(Product.id))
+        .filter(
+            Product.shop_id == shop_id,
+            Product.is_deleted == False,
+            Product.archived == False,
+            ~exists().where(
+                and_(
+                    child.parent_id == Product.id,
+                    child.shop_id == shop_id,
+                    child.is_deleted == False,
+                )
+            ),
+        )
+        .scalar()
+        or 0
+    )
+
+
+def _revenue_and_profit_for_window(db: Session, shop_id: str, start: datetime, end: datetime) -> dict:
+    revenue, cost = (
+        db.query(
+            func.coalesce(func.sum(SaleItem.total_price), 0),
+            func.coalesce(func.sum(SaleItem.cost_price), 0),
+        )
+        .join(Sale, Sale.id == SaleItem.sale_id)
+        .filter(Sale.shop_id == shop_id, Sale.created_at >= start, Sale.created_at < end)
+        .one()
+    )
+    revenue = float(revenue or 0)
+    cost = float(cost or 0)
+
+    expenses = (
+        db.query(func.coalesce(func.sum(Expense.amount), 0))
+        .filter(Expense.shop_id == shop_id, Expense.created_at >= start, Expense.created_at < end)
+        .scalar()
+        or 0
+    )
+    expenses = float(expenses or 0)
+
+    return {
+        "revenue": revenue,
+        "cost": cost,
+        "expenses": expenses,
+        "profit": revenue - cost - expenses,
+    }
+
+
+def _sales_count_for_window(db: Session, shop_id: str, start: datetime, end: datetime) -> int:
+    return (
+        db.query(func.count(Sale.id))
+        .filter(Sale.shop_id == shop_id, Sale.created_at >= start, Sale.created_at < end)
+        .scalar()
+        or 0
+    )
+
+
+# ─── GET / (existing summary) ───────────────────────────────────
 
 
 @router.get("/")
@@ -18,20 +145,18 @@ def get_dashboard(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    # If no session_id provided, try to use the currently active session (scoped to shop)
     if not session_id:
         active_session = (
             db.query(SessionModel)
             .filter(
                 SessionModel.is_active == True,
-                SessionModel.shop_id == shop_id,  # 🔧 FIX #2: shop filter
+                SessionModel.shop_id == shop_id,
             )
             .first()
         )
         if active_session:
             session_id = active_session.id
 
-    # Base query for SaleItem – optionally filter by session
     sale_items_query = db.query(SaleItem).join(Sale).filter(Sale.shop_id == shop_id)
     if session_id:
         sale_items_query = sale_items_query.filter(Sale.session_id == session_id)
@@ -45,25 +170,19 @@ def get_dashboard(
 
     for item in items:
         total_revenue += item.total_price
-        total_cost += item.cost_price or 0  # 🔧 FIX #3: cost_price is already total
+        total_cost += item.cost_price or 0
         total_quantity += item.quantity
         product_sales[item.product_id] = product_sales.get(item.product_id, 0) + item.quantity
 
-    # Total expenses – also filter by session
-    expenses_query = db.query(func.sum(Expense.amount)).filter(  # 🔧 FIX #1: valid query
-        Expense.shop_id == shop_id
-    )
+    expenses_query = db.query(func.sum(Expense.amount)).filter(Expense.shop_id == shop_id)
     if session_id:
         expenses_query = expenses_query.filter(Expense.session_id == session_id)
     total_expenses = expenses_query.scalar() or 0.0
 
-    # Profit = revenue - cost - expenses
     profit = total_revenue - total_cost - total_expenses
 
-    # Top products (list of [product_id, quantity] tuples)
     top_products = sorted(product_sales.items(), key=lambda x: x[1], reverse=True)[:5]
 
-    # Best / worst product — resolve IDs to names                # 🔧 FIX #4
     best_product_id = max(product_sales, key=product_sales.get) if product_sales else None
     worst_product_id = min(product_sales, key=product_sales.get) if product_sales else None
 
@@ -88,7 +207,543 @@ def get_dashboard(
         "top_products": top_products,
         "best_product": best_product,
         "worst_product": worst_product,
-        "avg_sale_value": avg_item_price,  # kept key for frontend compatibility
+        "avg_sale_value": avg_item_price,
         "profit_margin": profit_margin,
         "total_expenses": total_expenses,
     }
+
+
+# ─── GET /today ─────────────────────────────────────────────────
+
+
+@router.get("/today")
+def get_today_snapshot(
+    db: Session = Depends(get_db),
+    shop_id: str = Depends(get_current_shop_id),
+):
+    start, end = _today_utc_range()
+    financials = _revenue_and_profit_for_window(db, shop_id, start, end)
+    sales_count = _sales_count_for_window(db, shop_id, start, end)
+    low_stock = _low_stock_count(db, shop_id)
+
+    return {
+        "date": start.date().isoformat(),
+        "revenue": round(financials["revenue"], 2),
+        "profit": round(financials["profit"], 2),
+        "sales_count": sales_count,
+        "low_stock_count": low_stock,
+    }
+
+
+# ─── GET /health-score ──────────────────────────────────────────
+
+
+@router.get("/health-score")
+def get_health_score(
+    db: Session = Depends(get_db),
+    shop_id: str = Depends(get_current_shop_id),
+):
+    now = datetime.utcnow()
+
+    cur_start = now - timedelta(days=7)
+    cur_fin = _revenue_and_profit_for_window(db, shop_id, cur_start, now)
+
+    prev_start = now - timedelta(days=14)
+    prev_end = cur_start
+    prev_fin = _revenue_and_profit_for_window(db, shop_id, prev_start, prev_end)
+
+    def _score_for(fin: dict) -> tuple[int, dict]:
+        score = 0
+        components = {}
+
+        revenue = fin["revenue"]
+        profit = fin["profit"]
+
+        # Profit margin (max 40)
+        if revenue > 0:
+            margin = profit / revenue
+        else:
+            margin = 0.0
+        if margin >= 0.30:
+            pm_points = 40
+        elif margin >= 0.15:
+            pm_points = 25
+        elif margin > 0:
+            pm_points = 10
+        else:
+            pm_points = 0
+        components["profit_margin_points"] = pm_points
+        components["profit_margin_pct"] = round(margin * 100, 1)
+        score += pm_points
+
+        # Cash flow (max 30)
+        if revenue > 0:
+            cf_ratio = max(0.0, min(1.0, profit / revenue))
+        else:
+            cf_ratio = 0.0
+        cf_points = int(round(cf_ratio * 30))
+        components["cash_flow_points"] = cf_points
+        components["cash_flow_ratio"] = round(cf_ratio, 2)
+        score += cf_points
+
+        # Stock health (max 20) — leaf products only
+        leaf_total = _leaf_product_count(db, shop_id)
+        low = _low_stock_count(db, shop_id)
+        if leaf_total > 0:
+            healthy_ratio = max(0.0, 1.0 - (low / leaf_total))
+        else:
+            healthy_ratio = 1.0
+        stock_points = int(round(healthy_ratio * 20))
+        components["stock_points"] = stock_points
+        components["healthy_products"] = leaf_total - low
+        components["total_products"] = leaf_total
+        components["low_stock"] = low
+        score += stock_points
+
+        # Debt collection (max 10)
+        collected = (
+            db.query(func.coalesce(func.sum(Payment.amount), 0))
+            .filter(
+                Payment.shop_id == shop_id,
+                Payment.created_at >= cur_start,
+                Payment.created_at <= now,
+            )
+            .scalar()
+            or 0
+        )
+        invoiced = (
+            db.query(func.coalesce(func.sum(Sale.total_amount), 0))
+            .filter(
+                Sale.shop_id == shop_id,
+                Sale.created_at >= cur_start,
+                Sale.created_at <= now,
+                Sale.payment_status.in_(["unpaid", "partial"]),
+            )
+            .scalar()
+            or 0
+        )
+        if invoiced > 0:
+            collect_ratio = min(1.0, float(collected) / float(invoiced))
+        else:
+            collect_ratio = 1.0
+        debt_points = int(round(collect_ratio * 10))
+        components["debt_points"] = debt_points
+        components["collection_ratio"] = round(collect_ratio, 2)
+        score += debt_points
+
+        return max(0, min(100, score)), components
+
+    score, components = _score_for(cur_fin)
+    prev_score, _ = _score_for(prev_fin)
+    delta = score - prev_score
+
+    if score >= 70:
+        tone, label = "good", "Healthy"
+        message = "You're doing well — keep it up."
+    elif score >= 40:
+        tone, label = "warn", "Watch"
+        message = "Mixed signals — check profit margin and stock."
+    else:
+        tone, label = "bad", "Needs attention"
+        message = "Several areas need attention this week."
+
+    return {
+        "score": score,
+        "previous": prev_score,
+        "delta": delta,
+        "tone": tone,
+        "label": label,
+        "message": message,
+        "components": components,
+        "window": {
+            "start": cur_start.isoformat(),
+            "end": now.isoformat(),
+            "previous_start": prev_start.isoformat(),
+            "previous_end": prev_end.isoformat(),
+        },
+    }
+
+
+# ─── GET /focus ─────────────────────────────────────────────────
+
+
+@router.get("/focus")
+def get_focus_actions(
+    db: Session = Depends(get_db),
+    shop_id: str = Depends(get_current_shop_id),
+):
+    items: list[dict] = []
+    now = datetime.utcnow()
+    cutoff_30d = now - timedelta(days=30)
+    cutoff_14d = now - timedelta(days=14)
+
+    # Precompute recent sales map
+    sold_recently = (
+        db.query(
+            SaleItem.product_id,
+            func.sum(SaleItem.quantity).label("sold"),
+        )
+        .join(Sale, Sale.id == SaleItem.sale_id)
+        .filter(Sale.shop_id == shop_id, Sale.created_at >= cutoff_30d)
+        .group_by(SaleItem.product_id)
+        .all()
+    )
+    sold_map = {row.product_id: float(row.sold or 0) for row in sold_recently}
+
+    # ── 1. Critical: zero stock but sold recently ──
+    zero_stock = (
+        _leaf_products_query(db, shop_id)
+        .filter(Product.stock_qty <= 0)
+        .all()
+    )
+    for p in zero_stock:
+        if sold_map.get(p.id, 0) > 0:
+            items.append({
+                "type": "critical",
+                "severity": "high",
+                "title": f"{p.name} is out of stock",
+                "detail": f"Sold {int(sold_map[p.id])} {p.unit or 'units'} in last 30 days",
+                "hint": "Restock now",
+                "link": f"/products/{p.id}",
+            })
+            if len(items) >= 3:
+                return {"generated_at": now.isoformat(), "items": items}
+
+    # ── 2. Restock: < 3 days of stock ──
+    live_products = (
+        _leaf_products_query(db, shop_id)
+        .filter(Product.stock_qty > 0)
+        .all()
+    )
+    restock_candidates = []
+    for p in live_products:
+        sold = sold_map.get(p.id, 0)
+        if sold <= 0:
+            continue
+        daily = sold / 30.0
+        if daily <= 0:
+            continue
+        days_left = (p.stock_qty or 0) / daily
+        if days_left < 3:
+            restock_candidates.append((days_left, p, daily))
+    restock_candidates.sort(key=lambda x: x[0])
+    for days_left, p, daily in restock_candidates:
+        items.append({
+            "type": "restock",
+            "severity": "high",
+            "title": f"{p.name} — ~{days_left:.1f} days of stock left",
+            "detail": f"Current stock {int(p.stock_qty or 0)} {p.unit or 'units'} · ~{daily:.1f}/day",
+            "hint": f"Order ~{max(1, int(round(daily * 7)))} {p.unit or 'units'} for a week",
+            "link": f"/products/{p.id}",
+        })
+        if len(items) >= 3:
+            return {"generated_at": now.isoformat(), "items": items}
+
+    # ── 3. Debtors overdue >14 days ──
+    overdue_customers = (
+        db.query(Customer)
+        .filter(Customer.shop_id == shop_id, Customer.total_credit > 0)
+        .all()
+    )
+    overdue_total = 0.0
+    overdue_count = 0
+    for c in overdue_customers:
+        last_payment = (
+            db.query(func.max(Payment.created_at))
+            .filter(Payment.customer_id == c.id, Payment.shop_id == shop_id)
+            .scalar()
+        )
+        if last_payment is None or last_payment < cutoff_14d:
+            overdue_total += float(c.total_credit or 0)
+            overdue_count += 1
+
+    if overdue_count > 0:
+        items.append({
+            "type": "debtors",
+            "severity": "medium",
+            "title": f"{overdue_count} debtor{'s' if overdue_count != 1 else ''} overdue 14+ days",
+            "detail": f"MWK {overdue_total:,.0f} outstanding",
+            "hint": "Review credit page",
+            "link": "/credit",
+        })
+        if len(items) >= 3:
+            return {"generated_at": now.isoformat(), "items": items}
+
+    # ── 4. Margin drop (≥8 pts) in last 30 days ──
+    leaf_products = _leaf_products_query(db, shop_id).filter(Product.selling_price > 0).all()
+    margin_drops = []
+    for p in leaf_products:
+        recent_purchase_up = (
+            db.query(PriceHistory)
+            .filter(
+                PriceHistory.product_id == p.id,
+                PriceHistory.price_type == "purchase",
+                PriceHistory.changed_at >= cutoff_30d,
+                PriceHistory.new_price > PriceHistory.old_price,
+            )
+            .order_by(PriceHistory.changed_at.desc())
+            .first()
+        )
+        if not recent_purchase_up:
+            continue
+        old_pp = float(recent_purchase_up.old_price or 0)
+        new_pp = float(recent_purchase_up.new_price or 0)
+        sp = float(p.selling_price or 0)
+        if old_pp <= 0 or sp <= 0:
+            continue
+        old_margin = (sp - old_pp) / sp * 100
+        new_margin = (sp - new_pp) / sp * 100
+        drop = old_margin - new_margin
+        if drop >= 8:
+            margin_drops.append((drop, p, old_margin, new_margin))
+
+    margin_drops.sort(key=lambda x: x[0], reverse=True)
+    for drop, p, old_m, new_m in margin_drops:
+        items.append({
+            "type": "margin",
+            "severity": "medium",
+            "title": f"{p.name} margin dropped {drop:.1f} points",
+            "detail": f"{old_m:.1f}% → {new_m:.1f}% (cost up, price flat)",
+            "hint": "Consider raising price",
+            "link": f"/products/{p.id}",
+        })
+        if len(items) >= 3:
+            return {"generated_at": now.isoformat(), "items": items}
+
+    # ── 5. Fallback: low-stock leaf products ──
+    low_products = (
+        _leaf_products_query(db, shop_id)
+        .filter(Product.stock_qty > 0, Product.stock_qty <= Product.low_stock_threshold)
+        .order_by(Product.stock_qty.asc())
+        .limit(3 - len(items))
+        .all()
+    )
+    for p in low_products:
+        items.append({
+            "type": "low_stock",
+            "severity": "low",
+            "title": f"{p.name} running low",
+            "detail": f"{int(p.stock_qty or 0)} {p.unit or 'units'} left (threshold {int(p.low_stock_threshold or 0)})",
+            "hint": "Restock soon",
+            "link": f"/products/{p.id}",
+        })
+
+    return {"generated_at": now.isoformat(), "items": items[:3]}
+
+
+# ─── GET /cash-flow ─────────────────────────────────────────────
+
+
+@router.get("/cash-flow")
+def get_cash_flow(
+    days: int = Query(7, ge=1, le=90),
+    db: Session = Depends(get_db),
+    shop_id: str = Depends(get_current_shop_id),
+):
+    now = datetime.utcnow()
+    start = now - timedelta(days=days)
+
+    sales_paid = (
+        db.query(func.coalesce(func.sum(Sale.amount_paid), 0))
+        .filter(
+            Sale.shop_id == shop_id,
+            Sale.created_at >= start,
+            Sale.created_at <= now,
+            Sale.is_voided == False,
+        )
+        .scalar()
+        or 0
+    )
+    customer_payments = (
+        db.query(func.coalesce(func.sum(Payment.amount), 0))
+        .filter(
+            Payment.shop_id == shop_id,
+            Payment.created_at >= start,
+            Payment.created_at <= now,
+        )
+        .scalar()
+        or 0
+    )
+
+    expenses_out = (
+        db.query(func.coalesce(func.sum(Expense.amount), 0))
+        .filter(
+            Expense.shop_id == shop_id,
+            Expense.created_at >= start,
+            Expense.created_at <= now,
+        )
+        .scalar()
+        or 0
+    )
+    stock_out = (
+        db.query(func.coalesce(func.sum(StockBatch.quantity_added * StockBatch.cost_per_unit), 0))
+        .filter(
+            StockBatch.shop_id == shop_id,
+            StockBatch.date_added >= start,
+            StockBatch.date_added <= now,
+            StockBatch.cost_per_unit.isnot(None),
+        )
+        .scalar()
+        or 0
+    )
+
+    cash_in = float(sales_paid) + float(customer_payments)
+    cash_out = float(expenses_out) + float(stock_out)
+    net = cash_in - cash_out
+
+    active_session = (
+        db.query(SessionModel)
+        .filter(SessionModel.is_active == True, SessionModel.shop_id == shop_id)
+        .first()
+    )
+    if active_session:
+        drawer = (
+            db.query(func.coalesce(func.sum(Sale.amount_paid), 0))
+            .filter(
+                Sale.shop_id == shop_id,
+                Sale.session_id == active_session.id,
+                Sale.is_voided == False,
+            )
+            .scalar()
+            or 0
+        )
+        drawer = float(drawer)
+    else:
+        drawer = None
+
+    return {
+        "window_days": days,
+        "cash_in": round(cash_in, 2),
+        "cash_out": round(cash_out, 2),
+        "net": round(net, 2),
+        "breakdown": {
+            "sales_paid": round(float(sales_paid), 2),
+            "customer_payments": round(float(customer_payments), 2),
+            "expenses": round(float(expenses_out), 2),
+            "stock_purchases": round(float(stock_out), 2),
+        },
+        "drawer": round(drawer, 2) if drawer is not None else None,
+        "session_id": active_session.id if active_session else None,
+    }
+
+
+# ─── GET /metric-deltas ─────────────────────────────────────────
+
+
+@router.get("/metric-deltas")
+def get_metric_deltas(
+    db: Session = Depends(get_db),
+    shop_id: str = Depends(get_current_shop_id),
+):
+    now = datetime.utcnow()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    tomorrow = today_start + timedelta(days=1)
+    yest_start = today_start - timedelta(days=1)
+
+    def _metrics(a: datetime, b: datetime) -> dict:
+        fin = _revenue_and_profit_for_window(db, shop_id, a, b)
+        qty = (
+            db.query(func.coalesce(func.sum(SaleItem.quantity), 0))
+            .join(Sale, Sale.id == SaleItem.sale_id)
+            .filter(Sale.shop_id == shop_id, Sale.created_at >= a, Sale.created_at < b)
+            .scalar()
+            or 0
+        )
+        return {
+            "revenue": fin["revenue"],
+            "profit": fin["profit"],
+            "expenses": fin["expenses"],
+            "items_sold": float(qty),
+        }
+
+    t = _metrics(today_start, tomorrow)
+    y = _metrics(yest_start, today_start)
+
+    def _delta(cur, prev):
+        abs_d = cur - prev
+        pct = None
+        if prev != 0:
+            pct = round((abs_d / prev) * 100, 1)
+        elif cur > 0:
+            pct = 100.0
+        return {
+            "current": round(cur, 2),
+            "previous": round(prev, 2),
+            "absolute": round(abs_d, 2),
+            "percent": pct,
+        }
+
+    return {
+        "revenue": _delta(t["revenue"], y["revenue"]),
+        "profit": _delta(t["profit"], y["profit"]),
+        "expenses": _delta(t["expenses"], y["expenses"]),
+        "items_sold": _delta(t["items_sold"], y["items_sold"]),
+    }
+
+
+# ─── GET /top-products-trend ────────────────────────────────────
+
+
+@router.get("/top-products-trend")
+def get_top_products_trend(
+    days: int = Query(7, ge=1, le=30),
+    limit: int = Query(3, ge=1, le=10),
+    db: Session = Depends(get_db),
+    shop_id: str = Depends(get_current_shop_id),
+):
+    now = datetime.utcnow()
+    start = (now - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    rows = (
+        db.query(
+            Product.id,
+            Product.name,
+            func.sum(SaleItem.quantity).label("qty"),
+            func.sum(SaleItem.total_price).label("rev"),
+        )
+        .join(SaleItem, SaleItem.product_id == Product.id)
+        .join(Sale, Sale.id == SaleItem.sale_id)
+        .filter(
+            Sale.shop_id == shop_id,
+            Sale.created_at >= start,
+            Sale.created_at <= now,
+        )
+        .group_by(Product.id, Product.name)
+        .order_by(func.sum(SaleItem.quantity).desc())
+        .limit(limit)
+        .all()
+    )
+
+    results = []
+    for row in rows:
+        daily = (
+            db.query(
+                func.date(Sale.created_at).label("day"),
+                func.sum(SaleItem.quantity).label("qty"),
+            )
+            .join(SaleItem, SaleItem.sale_id == Sale.id)
+            .filter(
+                Sale.shop_id == shop_id,
+                SaleItem.product_id == row.id,
+                Sale.created_at >= start,
+                Sale.created_at <= now,
+            )
+            .group_by(func.date(Sale.created_at))
+            .all()
+        )
+        daily_map = {str(r.day): float(r.qty or 0) for r in daily}
+
+        sparkline = []
+        for i in range(days):
+            day = (start + timedelta(days=i)).date().isoformat()
+            sparkline.append(daily_map.get(day, 0.0))
+
+        results.append({
+            "id": row.id,
+            "name": row.name,
+            "quantity": float(row.qty or 0),
+            "revenue": round(float(row.rev or 0), 2),
+            "sparkline": sparkline,
+        })
+
+    return {"window_days": days, "products": results}

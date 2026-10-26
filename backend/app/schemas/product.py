@@ -65,3 +65,41 @@ class VariantSummary(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ── Tier 3.3: Bulk creation (Variant Wizard) ────────────────────
+
+
+class BulkVariantItem(BaseModel):
+    """One variant row inside a bulk product creation request."""
+
+    name: str = Field(..., min_length=1, max_length=200)
+    selling_price: float = Field(..., gt=0)
+    purchase_price: float = Field(0, ge=0)
+    stock_qty: float = Field(0, ge=0)
+    low_stock_threshold: float = Field(5, ge=0)
+
+
+class BulkProductCreate(BaseModel):
+    """
+    Create one parent product + N variants in a single atomic request.
+
+    If `has_variants` is False, the wizard is treated as "create a single
+    standalone product" — in that case the parent record itself carries
+    the price/stock (like a normal ProductCreate).
+    """
+
+    name: str = Field(..., min_length=1, max_length=200)
+    category: str | None = None
+    type: str = Field("variant", description='"variant" or "bulk"')
+    unit: str = Field("piece", description='"kg", "g", "piece"')
+    low_stock_threshold: float = Field(5, ge=0)
+
+    has_variants: bool = True
+    # Only used when has_variants = False
+    selling_price: float = Field(0, ge=0)
+    purchase_price: float = Field(0, ge=0)
+    stock_qty: float = Field(0, ge=0)
+
+    # Only used when has_variants = True
+    variants: list[BulkVariantItem] = Field(default_factory=list)

@@ -1,7 +1,7 @@
 """Sales API routes."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -46,16 +46,8 @@ def _validate_payment_amounts(
 ) -> float:
     """
     Enforce consistency between payment_status and amount_paid.
-
-    Rules:
-    - "paid"    → amount_paid must equal total_amount (auto-fixed if 0/None)
-    - "unpaid"  → amount_paid must be 0
-    - "partial" → 0 < amount_paid < total_amount
-
-    Returns the (possibly corrected) amount_paid value.
     """
     if payment_status == "paid":
-        # Force full payment
         return total_amount
     if payment_status == "unpaid":
         if amount_paid and amount_paid > 0:
@@ -76,7 +68,6 @@ def _validate_payment_amounts(
                 detail="payment_status='partial' requires amount_paid < total_amount; use 'paid' instead",
             )
         return amount_paid
-    # Should never reach here (normalized before call), but defensive:
     return 0.0
 
 
@@ -100,13 +91,7 @@ def create_sale(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """Create a new sale with items, update stock, and calculate totals.
-
-    Payment rules enforced:
-    - "paid"    → amount_paid auto-set to total
-    - "unpaid"  → amount_paid = 0, credit increased for customer
-    - "partial" → 0 < amount_paid < total, credit increased by remainder
-    """
+    """Create a new sale with items, update stock, and calculate totals."""
     if not sale.items:
         raise HTTPException(status_code=400, detail="Sale must have at least one item")
 
@@ -135,7 +120,7 @@ def create_sale(
         shop_id=shop_id,
         customer_id=customer_id,
         payment_status=payment_status,
-        amount_paid=0.0,  # set correctly below after we know total
+        amount_paid=0.0,
     )
 
     active_session = (
@@ -216,19 +201,15 @@ def create_sale(
             db.add(sale_item)
 
         new_sale.total_amount = total_amount
-
-        # Enforce payment_status ↔ amount_paid consistency
         new_sale.amount_paid = _validate_payment_amounts(
             payment_status, total_amount, sale.amount_paid or 0.0
         )
 
-        # Update customer credit for unpaid/partial sales
         if customer and payment_status != "paid":
             owed = total_amount - new_sale.amount_paid
             if owed > 0:
                 customer.total_credit = (customer.total_credit or 0) + owed
 
-        # Update session cash/credit tracking
         _update_session_cash(active_session, payment_status, total_amount)
 
         db.commit()
@@ -353,39 +334,144 @@ def bulk_sales(
         raise
 
 
+# ─────────────────────────────────────────────────────────────────
+# GET / — paginated, filterable (status + date), with line-item detail
+# ─────────────────────────────────────────────────────────────────
+
+
 @router.get("/")
 def get_sales(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    status: str | None = Query(
+        None, description="'paid' | 'unpaid' | 'voided' (leave empty for all)"
+    ),
+    days: int | None = Query(
+        None, ge=1, le=365, description="Only sales from the last N days"
+    ),
+    on_date: str | None = Query(
+        None, description="Only sales on a specific day (YYYY-MM-DD, UTC)"
+    ),
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    sales = db.query(Sale).filter(Sale.shop_id == shop_id).order_by(Sale.created_at.desc()).all()
+    """
+    Paginated list of sales with full line-item detail.
+
+    Filters:
+      - status: paid | unpaid | voided (leave empty for all)
+      - days:   last N days (overrides on_date if both given)
+      - on_date: single UTC calendar day (YYYY-MM-DD)
+
+    Response:
+    {
+      "sales": [{
+        id, total_amount, amount_paid, created_at, payment_status,
+        is_voided, void_reason, customer_id, customer_name, session_id,
+        products: [names...],
+        items: [{name, quantity, unit_price, total_price}]
+      }],
+      "total": int,
+      "has_more": bool
+    }
+    """
+    base = db.query(Sale).filter(Sale.shop_id == shop_id)
+
+    # ── Date filter ──
+    if days is not None:
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        base = base.filter(Sale.created_at >= cutoff)
+    elif on_date:
+        try:
+            day = datetime.strptime(on_date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail="on_date must be YYYY-MM-DD"
+            )
+        next_day = day + timedelta(days=1)
+        base = base.filter(
+            Sale.created_at >= day, Sale.created_at < next_day
+        )
+
+    # ── Status filter ──
+    if status == "voided":
+        base = base.filter(Sale.is_voided == True)
+    elif status == "paid":
+        base = base.filter(Sale.is_voided == False, Sale.payment_status == "paid")
+    elif status == "unpaid":
+        base = base.filter(
+            Sale.is_voided == False,
+            Sale.payment_status.in_(["unpaid", "partial"]),
+        )
+
+    total = base.count()
+    sales = (
+        base.order_by(Sale.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
 
     sale_ids = [s.id for s in sales]
-    items_by_sale: dict[str, list[str]] = {}
+
+    items_by_sale: dict[str, list[dict]] = {}
+    products_by_sale: dict[str, list[str]] = {}
     if sale_ids:
         rows = (
-            db.query(SaleItem.sale_id, Product.name)
+            db.query(
+                SaleItem.sale_id,
+                Product.name,
+                SaleItem.quantity,
+                SaleItem.unit_price,
+                SaleItem.total_price,
+            )
             .join(Product, Product.id == SaleItem.product_id)
             .filter(SaleItem.sale_id.in_(sale_ids))
             .all()
         )
-        for sale_id, name in rows:
-            items_by_sale.setdefault(sale_id, []).append(name)
+        for sale_id, name, qty, unit_px, total_px in rows:
+            items_by_sale.setdefault(sale_id, []).append({
+                "name": name,
+                "quantity": float(qty or 0),
+                "unit_price": float(unit_px or 0),
+                "total_price": float(total_px or 0),
+            })
+            products_by_sale.setdefault(sale_id, []).append(name)
+
+    customer_ids = {s.customer_id for s in sales if s.customer_id}
+    customer_names: dict[str, str] = {}
+    if customer_ids:
+        for c in (
+            db.query(Customer.id, Customer.name)
+            .filter(Customer.id.in_(customer_ids), Customer.shop_id == shop_id)
+            .all()
+        ):
+            customer_names[c.id] = c.name
 
     result = []
     for sale in sales:
         result.append(
             {
                 "id": sale.id,
-                "total_amount": sale.total_amount,
-                "amount_paid": sale.amount_paid,
+                "total_amount": float(sale.total_amount or 0),
+                "amount_paid": float(sale.amount_paid or 0),
                 "created_at": sale.created_at,
                 "payment_status": sale.payment_status,
-                "is_voided": sale.is_voided,
-                "products": items_by_sale.get(sale.id, []),
+                "is_voided": bool(sale.is_voided),
+                "void_reason": sale.void_reason,
+                "customer_id": sale.customer_id,
+                "customer_name": customer_names.get(sale.customer_id) if sale.customer_id else None,
+                "session_id": sale.session_id,
+                "products": products_by_sale.get(sale.id, []),
+                "items": items_by_sale.get(sale.id, []),
             }
         )
-    return result
+
+    return {
+        "sales": result,
+        "total": total,
+        "has_more": offset + len(sales) < total,
+    }
 
 
 @router.post(
@@ -398,10 +484,7 @@ def void_sale(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """Void a sale and restore stock.
-
-    Requires manager or owner (cashiers cannot void — fraud prevention).
-    """
+    """Void a sale and restore stock. Requires manager or owner."""
     sale = db.query(Sale).filter(Sale.id == sale_id, Sale.shop_id == shop_id).first()
     if not sale:
         raise HTTPException(status_code=404, detail="Sale not found")
@@ -419,7 +502,6 @@ def void_sale(
         if product:
             product.stock_qty += item.quantity
 
-    # Reverse customer credit if this was a credit sale
     if sale.customer_id and sale.payment_status != "paid":
         customer = (
             db.query(Customer)
@@ -431,7 +513,6 @@ def void_sale(
             if owed > 0:
                 customer.total_credit = max(0, (customer.total_credit or 0) - owed)
 
-    # Reverse session cash/credit tracking
     if sale.session_id:
         session = db.query(SessionModel).filter(SessionModel.id == sale.session_id).first()
         if session:

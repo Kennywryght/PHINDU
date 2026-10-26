@@ -13,9 +13,14 @@
     Phone,
     ShoppingCart,
     RefreshCw,
+    DollarSign as MoneyIcon,
+    ChevronDown,
+    ChevronRight,
+    Wallet,
   } from "lucide-svelte";
   import Layout from "../components/Layout.svelte";
   import RestockModal from "../components/RestockModal.svelte";
+  import PaymentModal from "../components/PaymentModal.svelte";
   import API from "../api/api";
 
   let activeTab = "low-stock";
@@ -27,8 +32,11 @@
   let reorder = { critical: [], soon: [], ok: [], no_data: [] };
   let summary = {
     low_stock: 0,
+    low_stock_all: 0,
     debtors: 0,
+    debtors_all: 0,
     slow_movers: 0,
+    slow_movers_all: 0,
     reorder: 0,
     total: 0,
   };
@@ -36,12 +44,20 @@
   // State
   let loading = true;
   let error = null;
+  let showNoDataSection = false;
 
-  // Restock modal
+  // Modals
   let showRestockModal = false;
   let restockingProduct = null;
+  let showPaymentModal = false;
+  let payingCustomer = null;
 
   onMount(async () => {
+    await loadAll();
+    loading = false;
+  });
+
+  async function loadAll() {
     await Promise.all([
       fetchLowStock(),
       fetchDebtors(),
@@ -49,13 +65,18 @@
       fetchReorder(),
       fetchSummary(),
     ]);
+  }
+
+  async function refreshAll() {
+    loading = true;
+    await loadAll();
     loading = false;
-  });
+  }
 
   async function fetchLowStock() {
     try {
       const res = await API.get("/alerts/low-stock");
-      lowStock = res.data;
+      lowStock = res.data || [];
     } catch (err) {
       console.error("Failed to fetch low stock", err);
       error = "Could not fetch low stock alerts.";
@@ -65,7 +86,7 @@
   async function fetchDebtors() {
     try {
       const res = await API.get("/alerts/debtors?days=14");
-      debtors = res.data;
+      debtors = res.data || [];
     } catch (err) {
       console.error("Failed to fetch debtors", err);
     }
@@ -74,7 +95,7 @@
   async function fetchSlowMovers() {
     try {
       const res = await API.get("/alerts/slow-movers?days=30");
-      slowMovers = res.data;
+      slowMovers = res.data || [];
     } catch (err) {
       console.error("Failed to fetch slow movers", err);
     }
@@ -82,8 +103,10 @@
 
   async function fetchReorder() {
     try {
-      const res = await API.get("/alerts/reorder-suggestions?lookback_days=30&target_days=7");
-      reorder = res.data;
+      const res = await API.get(
+        "/alerts/reorder-suggestions?lookback_days=30&target_days=7"
+      );
+      reorder = res.data || { critical: [], soon: [], ok: [], no_data: [] };
     } catch (err) {
       console.error("Failed to fetch reorder suggestions", err);
     }
@@ -92,26 +115,25 @@
   async function fetchSummary() {
     try {
       const res = await API.get("/alerts/summary");
-      summary = res.data;
+      summary = res.data || summary;
     } catch (err) {
       console.error("Failed to fetch summary", err);
     }
   }
 
-  async function refreshAll() {
-    loading = true;
-    await Promise.all([
-      fetchLowStock(),
-      fetchDebtors(),
-      fetchSlowMovers(),
-      fetchReorder(),
-      fetchSummary(),
-    ]);
-    loading = false;
-  }
+  // ── Derived totals ──
+  $: debtorsTotal = debtors.reduce(
+    (s, d) => s + Number(d.total_credit || 0),
+    0
+  );
+  $: slowStuckTotal = slowMovers.reduce(
+    (s, p) => s + Number(p.stuck_value || 0),
+    0
+  );
+  $: atRiskTotal = debtorsTotal + slowStuckTotal;
 
   function severityLabel(severity) {
-    if (severity === "out_of_stock") return "OUT OF STOCK";
+    if (severity === "out_of_stock") return "OUT";
     if (severity === "critical") return "CRITICAL";
     return "LOW";
   }
@@ -127,6 +149,12 @@
     return new Date(isoString).toLocaleDateString();
   }
 
+  function fmt(n) {
+    return Number(n || 0).toLocaleString(undefined, {
+      maximumFractionDigits: 0,
+    });
+  }
+
   function goToProducts() {
     window.location.href = "/products";
   }
@@ -135,11 +163,11 @@
     window.location.href = "/credit";
   }
 
-  // Open restock modal for a product suggestion
+  // ── Restock ──
   function openRestock(product) {
-    // Build minimal product object expected by RestockModal
+    const id = product.product_id || product.id;
     restockingProduct = {
-      id: product.product_id,
+      id,
       name: product.name,
       stock_qty: product.stock_qty,
       unit: product.unit,
@@ -155,7 +183,22 @@
 
   async function handleRestockSaved() {
     closeRestock();
-    // Refresh all data (stock changed, reorder suggestions changed)
+    await refreshAll();
+  }
+
+  // ── Payment ──
+  function openPayment(customer) {
+    payingCustomer = customer;
+    showPaymentModal = true;
+  }
+
+  function closePayment() {
+    showPaymentModal = false;
+    payingCustomer = null;
+  }
+
+  async function handlePaymentSaved() {
+    closePayment();
     await refreshAll();
   }
 </script>
@@ -170,15 +213,42 @@
         </h2>
         <p class="subtitle">What needs your attention today</p>
       </div>
-      <button class="refresh-btn" on:click={refreshAll} disabled={loading} type="button">
+      <button
+        class="refresh-btn"
+        on:click={refreshAll}
+        disabled={loading}
+        type="button"
+      >
         <RefreshCw size={16} strokeWidth={2} />
         Refresh
       </button>
     </div>
 
     {#if loading}
-      <div class="state-box">Checking your business...</div>
+      <div class="skeleton-wrap">
+        <div class="skeleton-line wide"></div>
+        <div class="skeleton-line"></div>
+        <div class="skeleton-line"></div>
+        <div class="skeleton-line"></div>
+      </div>
     {:else}
+      <!-- Value at risk strip -->
+      {#if atRiskTotal > 0}
+        <div class="at-risk-card">
+          <div class="ar-icon">
+            <MoneyIcon size={22} strokeWidth={2} />
+          </div>
+          <div class="ar-body">
+            <span class="ar-label">Cash at risk</span>
+            <strong class="ar-value">MWK {fmt(atRiskTotal)}</strong>
+            <span class="ar-sub">
+              {#if debtorsTotal > 0}MWK {fmt(debtorsTotal)} owed · {/if}
+              {#if slowStuckTotal > 0}MWK {fmt(slowStuckTotal)} stuck in stock{/if}
+            </span>
+          </div>
+        </div>
+      {/if}
+
       <!-- Tabs -->
       <div class="tabs">
         <button
@@ -234,7 +304,7 @@
         </button>
       </div>
 
-      <!-- TAB CONTENT: REORDER -->
+      <!-- TAB: REORDER -->
       {#if activeTab === "reorder"}
         {#if reorder.critical.length === 0 &&
           reorder.soon.length === 0 &&
@@ -246,7 +316,6 @@
             <p>Add products and make sales to see smart reorder suggestions.</p>
           </div>
         {:else}
-          <!-- Critical -->
           {#if reorder.critical.length > 0}
             <div class="reorder-group">
               <div class="group-header critical-header">
@@ -260,16 +329,10 @@
                     <div class="reorder-info">
                       <h3>{item.name}</h3>
                       <div class="reorder-meta">
-                        <span>
-                          <strong>{item.stock_qty}</strong> {item.unit} left
-                        </span>
-                        <span>
-                          Selling <strong>{item.avg_daily_sales}</strong>/day
-                        </span>
+                        <span><strong>{item.stock_qty}</strong> {item.unit} left</span>
+                        <span>Selling <strong>{item.avg_daily_sales}</strong>/day</span>
                         <span class="urgency-text">
-                          {item.days_remaining !== null
-                            ? `${item.days_remaining} days left`
-                            : "OUT"}
+                          {item.days_remaining !== null ? `${item.days_remaining} days left` : "OUT"}
                         </span>
                         <span class="confidence confidence-{item.confidence}">
                           {item.confidence} confidence
@@ -278,9 +341,7 @@
                       <div class="suggestion">
                         <strong>Order {item.suggested_order_qty} {item.unit}</strong>
                         {#if item.purchase_price}
-                          <span class="cost">
-                            (≈ MWK {(item.suggested_order_qty * item.purchase_price).toLocaleString()})
-                          </span>
+                          <span class="cost">(≈ MWK {fmt(item.suggested_order_qty * item.purchase_price)})</span>
                         {/if}
                       </div>
                     </div>
@@ -293,7 +354,6 @@
             </div>
           {/if}
 
-          <!-- Soon -->
           {#if reorder.soon.length > 0}
             <div class="reorder-group">
               <div class="group-header soon-header">
@@ -307,16 +367,10 @@
                     <div class="reorder-info">
                       <h3>{item.name}</h3>
                       <div class="reorder-meta">
-                        <span>
-                          <strong>{item.stock_qty}</strong> {item.unit} left
-                        </span>
-                        <span>
-                          Selling <strong>{item.avg_daily_sales}</strong>/day
-                        </span>
+                        <span><strong>{item.stock_qty}</strong> {item.unit} left</span>
+                        <span>Selling <strong>{item.avg_daily_sales}</strong>/day</span>
                         <span class="urgency-text">
-                          {item.days_remaining !== null
-                            ? `${item.days_remaining} days left`
-                            : "—"}
+                          {item.days_remaining !== null ? `${item.days_remaining} days left` : "—"}
                         </span>
                         <span class="confidence confidence-{item.confidence}">
                           {item.confidence} confidence
@@ -335,7 +389,6 @@
             </div>
           {/if}
 
-          <!-- OK -->
           {#if reorder.ok.length > 0}
             <div class="reorder-group">
               <div class="group-header ok-header">
@@ -343,60 +396,49 @@
                 <span>OK — Well Stocked</span>
                 <span class="group-count">{reorder.ok.length}</span>
               </div>
-              <div class="reorder-list">
-                {#each reorder.ok as item}
-                  <div class="reorder-card ok-card">
-                    <div class="reorder-info">
-                      <h3>{item.name}</h3>
-                      <div class="reorder-meta">
-                        <span>
-                          <strong>{item.stock_qty}</strong> {item.unit} left
-                        </span>
-                        <span>
-                          Selling <strong>{item.avg_daily_sales}</strong>/day
-                        </span>
-                        <span class="urgency-text">
-                          {item.days_remaining !== null
-                            ? `${item.days_remaining} days left`
-                            : "—"}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                {/each}
-              </div>
+              <p class="ok-summary">
+                {reorder.ok.length} product{reorder.ok.length === 1 ? "" : "s"} have plenty of stock — nothing to do.
+              </p>
             </div>
           {/if}
 
-          <!-- No Data -->
           {#if reorder.no_data.length > 0}
             <div class="reorder-group">
-              <div class="group-header no-data-header">
-                <AlertTriangle size={18} strokeWidth={2} />
-                <span>Not Enough Sales History</span>
-                <span class="group-count">{reorder.no_data.length}</span>
-              </div>
-              <div class="reorder-list">
-                {#each reorder.no_data as item}
-                  <div class="reorder-card no-data-card">
-                    <div class="reorder-info">
-                      <h3>{item.name}</h3>
-                      <div class="reorder-meta">
-                        <span>
-                          <strong>{item.stock_qty}</strong> {item.unit} in stock
-                        </span>
-                        <span class="muted">No sales in last 30 days</span>
+              <button
+                type="button"
+                class="no-data-toggle"
+                on:click={() => (showNoDataSection = !showNoDataSection)}
+              >
+                {#if showNoDataSection}
+                  <ChevronDown size={16} />
+                {:else}
+                  <ChevronRight size={16} />
+                {/if}
+                <AlertTriangle size={14} strokeWidth={2} />
+                <span>{reorder.no_data.length} product{reorder.no_data.length === 1 ? "" : "s"} need more sales history</span>
+              </button>
+
+              {#if showNoDataSection}
+                <div class="reorder-list">
+                  {#each reorder.no_data as item}
+                    <div class="reorder-card no-data-card">
+                      <div class="reorder-info">
+                        <h3>{item.name}</h3>
+                        <div class="reorder-meta">
+                          <span><strong>{item.stock_qty}</strong> {item.unit} in stock</span>
+                          <span class="muted">No sales in last 30 days</span>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                {/each}
-              </div>
+                  {/each}
+                </div>
+              {/if}
             </div>
           {/if}
         {/if}
       {/if}
 
-      <!-- TAB CONTENT: LOW STOCK -->
+      <!-- TAB: LOW STOCK -->
       {#if activeTab === "low-stock"}
         {#if lowStock.length === 0}
           <div class="card success-card">
@@ -426,41 +468,59 @@
                     <span>MWK {product.selling_price?.toLocaleString()}</span>
                   </div>
                 </div>
-                <button class="btn-action" on:click={goToProducts} type="button">
-                  Manage
-                </button>
+                <div class="row-actions">
+                  <button class="btn-action" on:click={() => openRestock(product)} type="button">
+                    Restock
+                  </button>
+                  <button class="btn-action ghost" on:click={goToProducts} type="button">
+                    Manage
+                  </button>
+                </div>
               </div>
             {/each}
           </div>
         {/if}
       {/if}
 
-      <!-- TAB CONTENT: DEBTORS -->
+      <!-- TAB: DEBTORS -->
       {#if activeTab === "debtors"}
         {#if debtors.length === 0}
           <div class="card success-card">
             <CheckCircle2 size={48} strokeWidth={1.5} class="success-icon" />
-            <h3>No aging debtors</h3>
-            <p>All customers are up to date on payments.</p>
+            {#if summary.debtors_all > 0}
+              <h3>No aging debtors</h3>
+              <p>
+                {summary.debtors_all} customer{summary.debtors_all === 1 ? "" : "s"} ha{summary.debtors_all === 1 ? "s" : "ve"}
+                an outstanding balance, but all have paid within 14 days.
+              </p>
+              <button class="btn-link" on:click={goToCredit} type="button">
+                View all on Credit page →
+              </button>
+            {:else}
+              <h3>No outstanding balances</h3>
+              <p>No customer owes money right now.</p>
+            {/if}
           </div>
         {:else}
+          {#if debtorsTotal > 0}
+            <div class="subtotal-strip">
+              <span>{debtors.length} debtor{debtors.length === 1 ? "" : "s"} · total owed:</span>
+              <strong>MWK {fmt(debtorsTotal)}</strong>
+            </div>
+          {/if}
           <div class="alert-list">
             {#each debtors as debtor}
               <div class="alert-item severity-debtor">
                 <div class="alert-severity">
                   <Clock size={20} strokeWidth={2} />
                   <span class="severity-label">
-                    {#if debtor.never_paid}
-                      NEVER PAID
-                    {:else}
-                      {debtor.days_since_last_payment}d AGO
-                    {/if}
+                    {#if debtor.never_paid}NEVER PAID{:else}{debtor.days_since_last_payment}d AGO{/if}
                   </span>
                 </div>
                 <div class="alert-content">
                   <h3>{debtor.name}</h3>
                   <div class="alert-meta">
-                    <span class="amount">Owes MWK {debtor.total_credit?.toLocaleString()}</span>
+                    <span class="amount">Owes MWK {fmt(debtor.total_credit)}</span>
                     {#if debtor.phone}
                       <span><Phone size={12} /> {debtor.phone}</span>
                     {/if}
@@ -471,17 +531,21 @@
                     {/if}
                   </div>
                 </div>
-                <button class="btn-action" on:click={goToCredit} type="button">
-                  <DollarSign size={14} strokeWidth={2} />
-                  Payment
-                </button>
+                <div class="row-actions">
+                  <button class="btn-action" on:click={() => openPayment(debtor)} type="button">
+                    <Wallet size={14} strokeWidth={2} /> Pay
+                  </button>
+                  <button class="btn-action ghost" on:click={goToCredit} type="button">
+                    Credit page
+                  </button>
+                </div>
               </div>
             {/each}
           </div>
         {/if}
       {/if}
 
-      <!-- TAB CONTENT: SLOW MOVERS -->
+      <!-- TAB: SLOW MOVERS -->
       {#if activeTab === "slow-movers"}
         {#if slowMovers.length === 0}
           <div class="card success-card">
@@ -490,24 +554,28 @@
             <p>Every in-stock product has sold recently.</p>
           </div>
         {:else}
+          {#if slowStuckTotal > 0}
+            <div class="subtotal-strip slow">
+              <span>
+                {slowMovers.length} slow mover{slowMovers.length === 1 ? "" : "s"} · cash locked up:
+              </span>
+              <strong>MWK {fmt(slowStuckTotal)}</strong>
+            </div>
+          {/if}
           <div class="alert-list">
             {#each slowMovers as product}
               <div class="alert-item severity-slow">
                 <div class="alert-severity">
                   <TrendingDown size={20} strokeWidth={2} />
                   <span class="severity-label">
-                    {#if product.never_sold}
-                      NEVER SOLD
-                    {:else}
-                      {product.days_since_last_sale}d
-                    {/if}
+                    {#if product.never_sold}NEVER SOLD{:else}{product.days_since_last_sale}d{/if}
                   </span>
                 </div>
                 <div class="alert-content">
                   <h3>{product.name}</h3>
                   <div class="alert-meta">
-                    <span>In stock: <strong>{product.stock_qty}</strong> {product.unit}</span>
-                    <span>MWK {product.selling_price?.toLocaleString()}</span>
+                    <span>Stock: <strong>{product.stock_qty}</strong> {product.unit}</span>
+                    <span>Stuck: <strong class="stuck-value">MWK {fmt(product.stuck_value)}</strong></span>
                     {#if product.last_sale_date}
                       <span>Last sale: {formatDate(product.last_sale_date)}</span>
                     {:else}
@@ -515,9 +583,11 @@
                     {/if}
                   </div>
                 </div>
-                <button class="btn-action" on:click={goToProducts} type="button">
-                  View
-                </button>
+                <div class="row-actions">
+                  <button class="btn-action ghost" on:click={goToProducts} type="button">
+                    View
+                  </button>
+                </div>
               </div>
             {/each}
           </div>
@@ -532,6 +602,14 @@
     product={restockingProduct}
     on:saved={handleRestockSaved}
     on:close={closeRestock}
+  />
+{/if}
+
+{#if showPaymentModal && payingCustomer}
+  <PaymentModal
+    customer={payingCustomer}
+    on:saved={handlePaymentSaved}
+    on:close={closePayment}
   />
 {/if}
 
@@ -592,14 +670,80 @@
     cursor: not-allowed;
   }
 
-  .state-box {
-    text-align: center;
-    padding: 2rem;
-    color: var(--text-light, #6b7280);
-    font-size: 0.9rem;
+  /* Skeleton loading */
+  .skeleton-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    padding: 1rem 0;
+  }
+  .skeleton-line {
+    height: 44px;
+    border-radius: 8px;
+    background: var(--background, #f3f4f6);
+    animation: shimmer 1.4s infinite;
+  }
+  .skeleton-line.wide {
+    height: 60px;
+  }
+  @keyframes shimmer {
+    0%,
+    100% {
+      opacity: 0.55;
+    }
+    50% {
+      opacity: 0.85;
+    }
   }
 
-  /* ============ TABS ============ */
+  /* Value at risk */
+  .at-risk-card {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.85rem 1rem;
+    margin-bottom: 1rem;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-left: 4px solid #dc2626;
+    border-radius: 10px;
+  }
+  .ar-icon {
+    width: 40px;
+    height: 40px;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(220, 38, 38, 0.12);
+    color: #dc2626;
+    border-radius: 50%;
+  }
+  .ar-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+  }
+  .ar-label {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: 600;
+    color: var(--text-light, #6b7280);
+  }
+  .ar-value {
+    font-size: 1.2rem;
+    font-weight: 700;
+    color: var(--text, #111827);
+  }
+  .ar-sub {
+    font-size: 0.75rem;
+    color: var(--text-light, #6b7280);
+  }
+
+  /* Tabs */
   .tabs {
     display: flex;
     gap: 0.5rem;
@@ -655,7 +799,31 @@
     background: #ea580c;
   }
 
-  /* ============ REORDER GROUPS ============ */
+  /* Subtotal strips (debtors/slow movers) */
+  .subtotal-strip {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.6rem 0.85rem;
+    margin-bottom: 0.75rem;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+    font-size: 0.85rem;
+    color: var(--text-light, #6b7280);
+    flex-wrap: wrap;
+  }
+  .subtotal-strip strong {
+    color: #b91c1c;
+    font-weight: 700;
+    font-size: 1rem;
+  }
+  .subtotal-strip.slow strong {
+    color: #0891b2;
+  }
+
+  /* Reorder groups */
   .reorder-group {
     margin-bottom: 1.5rem;
   }
@@ -673,32 +841,33 @@
     border-radius: 8px;
   }
 
+  /* Dark-mode-safe group headers: color text/border, no solid bg */
   .group-header.critical-header {
-    background: #fee2e2;
-    color: #991b1b;
+    color: #dc2626;
+    border-left: 3px solid #dc2626;
+    background: var(--surface, #fff);
   }
 
   .group-header.soon-header {
-    background: #ffedd5;
-    color: #9a3412;
+    color: #ea580c;
+    border-left: 3px solid #ea580c;
+    background: var(--surface, #fff);
   }
 
   .group-header.ok-header {
-    background: #dcfce7;
-    color: #166534;
-  }
-
-  .group-header.no-data-header {
-    background: var(--background, #f9fafb);
-    color: var(--text-light, #6b7280);
+    color: #16a34a;
+    border-left: 3px solid #16a34a;
+    background: var(--surface, #fff);
   }
 
   .group-count {
     margin-left: auto;
-    background: rgba(0, 0, 0, 0.1);
+    background: var(--background, #f3f4f6);
+    color: inherit;
     padding: 0.1rem 0.5rem;
     border-radius: 20px;
     font-size: 0.75rem;
+    font-weight: 700;
   }
 
   .reorder-list {
@@ -718,25 +887,51 @@
     border-radius: 10px;
   }
 
+  /* Reorder cards: only left border carries the color */
   .critical-card {
     border-left-color: #dc2626;
-    background: #fef2f2;
   }
 
   .soon-card {
     border-left-color: #ea580c;
-    background: #fff7ed;
   }
 
   .ok-card {
     border-left-color: #16a34a;
-    background: #f0fdf4;
   }
 
   .no-data-card {
-    border-left-color: var(--border, #e5e7eb);
-    background: var(--background, #f9fafb);
+    border-left-color: #6b7280;
     opacity: 0.85;
+  }
+
+  .ok-summary {
+    margin: 0;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.82rem;
+    color: var(--text-light, #6b7280);
+  }
+
+  .no-data-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    width: 100%;
+    padding: 0.55rem 0.75rem;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-left: 3px solid #6b7280;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text-light, #6b7280);
+    text-align: left;
+    margin-bottom: 0.5rem;
+  }
+  .no-data-toggle:hover {
+    color: var(--text, #111827);
+    background: var(--background, #f9fafb);
   }
 
   .reorder-info {
@@ -785,21 +980,25 @@
     border-radius: 4px;
     font-weight: 600;
     text-transform: uppercase;
+    border: 1px solid;
   }
 
   .confidence-high {
-    background: #dcfce7;
     color: #166534;
+    border-color: #86efac;
+    background: transparent;
   }
 
   .confidence-medium {
-    background: #fef3c7;
     color: #92400e;
+    border-color: #fcd34d;
+    background: transparent;
   }
 
   .confidence-low {
-    background: #fee2e2;
     color: #991b1b;
+    border-color: #fecaca;
+    background: transparent;
   }
 
   .suggestion {
@@ -823,7 +1022,7 @@
     font-style: italic;
   }
 
-  /* ============ ALERT LIST (existing tabs) ============ */
+  /* Alert list */
   .alert-list {
     display: flex;
     flex-direction: column;
@@ -846,29 +1045,25 @@
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
   }
 
+  /* Severity: only left-border color — readable in light AND dark */
   .alert-item.severity-out-of-stock {
     border-left-color: #dc2626;
-    background: #fef2f2;
   }
 
   .alert-item.severity-critical {
     border-left-color: #ea580c;
-    background: #fff7ed;
   }
 
   .alert-item.severity-low {
     border-left-color: #eab308;
-    background: #fefce8;
   }
 
   .alert-item.severity-debtor {
     border-left-color: #7c3aed;
-    background: #f5f3ff;
   }
 
   .alert-item.severity-slow {
     border-left-color: #0891b2;
-    background: #ecfeff;
   }
 
   .alert-severity {
@@ -950,20 +1145,33 @@
     font-weight: 600;
   }
 
+  .alert-meta .stuck-value {
+    color: #0891b2;
+    font-weight: 700;
+  }
+
+  .row-actions {
+    display: flex;
+    gap: 0.35rem;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+  }
+
   .btn-action {
     display: inline-flex;
     align-items: center;
     gap: 0.3rem;
-    padding: 0.5rem 1rem;
+    padding: 0.5rem 0.9rem;
     background: var(--primary, #0f6b3e);
     color: white;
     border: none;
     border-radius: 8px;
     cursor: pointer;
     font-weight: 500;
-    font-size: 0.85rem;
+    font-size: 0.82rem;
     flex-shrink: 0;
     transition: background 0.15s;
+    white-space: nowrap;
   }
 
   .btn-action.primary {
@@ -974,11 +1182,36 @@
     background: #991b1b;
   }
 
-  .btn-action:hover {
+  .btn-action.ghost {
+    background: transparent;
+    color: var(--text-light, #6b7280);
+    border: 1px solid var(--border, #e5e7eb);
+  }
+
+  .btn-action.ghost:hover {
+    color: var(--text, #111827);
+    border-color: var(--text-light, #6b7280);
+  }
+
+  .btn-action:hover:not(.ghost) {
     background: var(--primary-dark, #0a4f2e);
   }
 
-  /* ============ SUCCESS CARD ============ */
+  .btn-link {
+    background: none;
+    border: none;
+    color: var(--primary, #0f6b3e);
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 0.5rem 0;
+    text-decoration: underline;
+  }
+  .btn-link:hover {
+    color: var(--primary-dark, #0a4f2e);
+  }
+
+  /* Success card */
   .card {
     background: var(--surface, #fff);
     border: 1px solid var(--border, #e5e7eb);
@@ -1009,7 +1242,7 @@
     font-size: 0.9rem;
   }
 
-  /* ============ MOBILE ============ */
+  /* Mobile */
   @media (max-width: 640px) {
     .alert-item,
     .reorder-card {
@@ -1028,13 +1261,29 @@
       text-align: left;
     }
 
+    .row-actions,
     .btn-action {
       width: 100%;
+    }
+
+    .row-actions {
+      flex-direction: column;
+    }
+
+    .btn-action {
       justify-content: center;
     }
 
     .group-header {
       font-size: 0.78rem;
+    }
+
+    .at-risk-card {
+      padding: 0.7rem 0.85rem;
+    }
+
+    .ar-value {
+      font-size: 1.05rem;
     }
   }
 </style>

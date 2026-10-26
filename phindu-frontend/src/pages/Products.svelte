@@ -12,16 +12,31 @@
     Layers,
     PackagePlus,
     Clock,
+    Trash,
+    AlertTriangle,
+    Search,
+    X,
+    ArrowUp,
+    ArrowDown,
+    ArrowUpDown,
+    TrendingDown,
+    Wallet,
+    Sparkles,
+    Upload,
+    Wand2,
   } from "lucide-svelte";
   import Layout from "../components/Layout.svelte";
   import ProductModal from "../components/ProductModal.svelte";
   import RestockModal from "../components/RestockModal.svelte";
+  import ProductDrawer from "../components/ProductDrawer.svelte";
+  import BatchRestockModal from "../components/BatchRestockModal.svelte";
+  import VariantWizard from "../components/VariantWizard.svelte";
   import API from "../api/api";
 
   let products = [];
   let grouped = [];
   let expanded = {};
-  let predictions = {}; // { product_id: prediction_data }
+  let predictions = {};
   let loading = true;
   let showModal = false;
   let editingProduct = null;
@@ -30,7 +45,68 @@
   let showRestockModal = false;
   let restockingProduct = null;
 
-  onMount(fetchProducts);
+  let showDrawer = false;
+  let drawerProduct = null;
+
+  let showBatchRestock = false;
+  let showWizard = false;
+
+  let serverCategories = [];
+
+  let search = "";
+  let selectedCategory = "";
+  let sortKey = "name";
+  let sortDir = 1;
+
+  // ── Tier 4.2: selection ──
+  let selectedIds = new Set();
+  let bulkWorking = false;
+
+  // ── Attention banner ──
+  let lowStockAlerts = [];
+  let slowMoverAlerts = [];
+  let attentionDismissedToday = false;
+  let reviewMode = false;
+  const ATTENTION_DAYS = 30;
+
+  function todayKey() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+      d.getDate()
+    ).padStart(2, "0")}`;
+  }
+
+  const ATTENTION_STORAGE_KEY = "phindu:products:attentionDismissed";
+
+  function checkDismissedToday() {
+    if (typeof window === "undefined") return false;
+    const stored = window.localStorage.getItem(ATTENTION_STORAGE_KEY);
+    return stored === todayKey();
+  }
+
+  function dismissAttentionForToday() {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(ATTENTION_STORAGE_KEY, todayKey());
+    }
+    attentionDismissedToday = true;
+  }
+
+  let prevFilter = filter;
+
+  onMount(async () => {
+    attentionDismissedToday = checkDismissedToday();
+    await Promise.all([fetchProducts(), fetchCategories(), fetchAttentionAlerts()]);
+  });
+
+  async function fetchCategories() {
+    try {
+      const res = await API.get("/products/categories");
+      serverCategories = (res.data || []).map((c) => c.name);
+    } catch (err) {
+      console.error("Failed to load categories", err);
+      serverCategories = [];
+    }
+  }
 
   async function fetchProducts() {
     loading = true;
@@ -53,9 +129,11 @@
       }
 
       products = filtered;
-      buildGroups();
+      // Clear selection of ids no longer visible
+      const visible = new Set(products.map((p) => p.id));
+      selectedIds = new Set([...selectedIds].filter((id) => visible.has(id)));
 
-      // Fetch predictions in parallel (fire and forget, don't block render)
+      buildGroups();
       fetchPredictions();
     } catch (err) {
       console.error("Failed to fetch products", err);
@@ -65,7 +143,6 @@
   }
 
   async function fetchPredictions() {
-    // Only fetch for sellable products (not parents, not deleted)
     const sellable = products.filter(
       (p) => !p.is_deleted && !p.archived && (p.parent_id || !isParentOfVariants(p.id))
     );
@@ -77,11 +154,24 @@
           const res = await API.get(`/products/${p.id}/restock-prediction`);
           results[p.id] = res.data;
         } catch {
-          // Ignore individual failures
+          /* ignore */
         }
       })
     );
     predictions = results;
+  }
+
+  async function fetchAttentionAlerts() {
+    try {
+      const [lowRes, slowRes] = await Promise.all([
+        API.get("/alerts/low-stock"),
+        API.get(`/alerts/slow-movers?days=${ATTENTION_DAYS}`),
+      ]);
+      lowStockAlerts = Array.isArray(lowRes.data) ? lowRes.data : [];
+      slowMoverAlerts = Array.isArray(slowRes.data) ? slowRes.data : [];
+    } catch (err) {
+      console.error("Failed to fetch attention alerts", err);
+    }
   }
 
   function isParentOfVariants(productId) {
@@ -103,18 +193,241 @@
       }
     });
 
-    grouped = tops.map((p) => ({
+    const sortedTops = [...tops].sort(compareFn);
+    Object.keys(byParent).forEach((pid) => {
+      byParent[pid].sort((a, b) =>
+        (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" })
+      );
+    });
+
+    grouped = sortedTops.map((p) => ({
       parent: p,
       variants: byParent[p.id] || [],
     }));
+  }
+
+  function compareFn(a, b) {
+    const key = sortKey;
+    let av, bv;
+    if (key === "name") {
+      av = (a.name || "").toLowerCase();
+      bv = (b.name || "").toLowerCase();
+      return av < bv ? -1 * sortDir : av > bv ? 1 * sortDir : 0;
+    }
+    if (key === "category") {
+      av = (a.category || "").toLowerCase();
+      bv = (b.category || "").toLowerCase();
+      return av < bv ? -1 * sortDir : av > bv ? 1 * sortDir : 0;
+    }
+    av = Number(a[key] || 0);
+    bv = Number(b[key] || 0);
+    return (av - bv) * sortDir;
+  }
+
+  function handleSort(key) {
+    if (sortKey === key) {
+      sortDir = -sortDir;
+    } else {
+      sortKey = key;
+      sortDir = 1;
+    }
+    buildGroups();
+  }
+
+  function sortIcon(key) {
+    if (sortKey !== key) return ArrowUpDown;
+    return sortDir === 1 ? ArrowUp : ArrowDown;
   }
 
   function toggleExpand(id) {
     expanded[id] = !expanded[id];
   }
 
-  $: filter, fetchProducts();
+  $: if (filter !== prevFilter) {
+    prevFilter = filter;
+    fetchProducts();
+  }
 
+  function matchesCurrentFilters(p) {
+    if (reviewMode) {
+      const id = p.id;
+      const parentId = p.parent_id;
+      const matchesAlert =
+        lowStockAlerts.some((a) => a.id === id || a.id === parentId) ||
+        slowMoverAlerts.some((a) => a.id === id || a.id === parentId);
+      if (!matchesAlert) return false;
+    }
+    if (selectedCategory) {
+      if ((p.category || "") !== selectedCategory) return false;
+    }
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      const name = (p.name || "").toLowerCase();
+      const cat = (p.category || "").toLowerCase();
+      if (!name.includes(q) && !cat.includes(q)) return false;
+    }
+    return true;
+  }
+
+  $: filteredGroups = grouped
+    .map((g) => {
+      const parentMatches = matchesCurrentFilters(g.parent);
+      const matchingVariants = g.variants.filter(matchesCurrentFilters);
+      if (parentMatches) {
+        return { parent: g.parent, variants: g.variants };
+      }
+      if (matchingVariants.length > 0) {
+        return { parent: g.parent, variants: matchingVariants };
+      }
+      return null;
+    })
+    .filter(Boolean);
+
+  $: categories = (() => {
+    const set = new Set(serverCategories);
+    products.forEach((p) => {
+      if (p.category && p.category.trim()) set.add(p.category.trim());
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  })();
+
+  $: summary = (() => {
+    let count = 0;
+    let valueSell = 0;
+    let valueCost = 0;
+    let lowCount = 0;
+    filteredGroups.forEach((g) => {
+      const list = [g.parent, ...g.variants];
+      list.forEach((p) => {
+        count += 1;
+        valueSell += (Number(p.selling_price) || 0) * (Number(p.stock_qty) || 0);
+        valueCost += (Number(p.purchase_price) || 0) * (Number(p.stock_qty) || 0);
+        const threshold = Number(p.low_stock_threshold ?? 5);
+        const stock = Number(p.stock_qty ?? 0);
+        if (!p.parent_id || stock <= threshold) {
+          if (stock <= threshold && !p.is_deleted && !p.archived) lowCount += 1;
+        }
+      });
+    });
+    return { count, valueSell, valueCost, lowCount };
+  })();
+
+  $: hasAttentionItems =
+    (lowStockAlerts.length > 0 || slowMoverAlerts.length > 0) &&
+    !attentionDismissedToday &&
+    filter !== "deleted" &&
+    filter !== "archived";
+
+  $: criticalLowCount = lowStockAlerts.filter(
+    (a) => a.severity === "critical" || a.severity === "out_of_stock"
+  ).length;
+
+  function reviewAlerts() {
+    reviewMode = true;
+    filter = "active";
+    search = "";
+    selectedCategory = "";
+    buildGroups();
+  }
+
+  function exitReview() {
+    reviewMode = false;
+  }
+
+  // ── Selection helpers (Tier 4.2) ──
+  function toggleSelect(id) {
+    if (selectedIds.has(id)) {
+      selectedIds.delete(id);
+    } else {
+      selectedIds.add(id);
+    }
+    selectedIds = selectedIds;
+  }
+
+  function isSelected(id) {
+    return selectedIds.has(id);
+  }
+
+  // All leaf-visible ids currently on screen (parents + variants in filtered view)
+  $: visibleIds = (() => {
+    const ids = [];
+    filteredGroups.forEach((g) => {
+      ids.push(g.parent.id);
+      g.variants.forEach((v) => ids.push(v.id));
+    });
+    return ids;
+  })();
+
+  $: allVisibleSelected =
+    visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
+
+  $: someVisibleSelected =
+    visibleIds.some((id) => selectedIds.has(id)) && !allVisibleSelected;
+
+  function toggleSelectAll() {
+    if (allVisibleSelected) {
+      // Deselect only visible ids
+      const next = new Set(selectedIds);
+      visibleIds.forEach((id) => next.delete(id));
+      selectedIds = next;
+    } else {
+      const next = new Set(selectedIds);
+      visibleIds.forEach((id) => next.add(id));
+      selectedIds = next;
+    }
+  }
+
+  function clearSelection() {
+    selectedIds = new Set();
+  }
+
+  async function runBulk(endpoint, extraBody = {}) {
+    if (selectedIds.size === 0) return;
+    bulkWorking = true;
+    try {
+      await API.post(endpoint, {
+        product_ids: [...selectedIds],
+        ...extraBody,
+      });
+      clearSelection();
+      await fetchProducts();
+      await fetchAttentionAlerts();
+    } catch (err) {
+      alert(
+        "Bulk action failed: " + (err.response?.data?.detail || "Unknown error")
+      );
+    } finally {
+      bulkWorking = false;
+    }
+  }
+
+  async function bulkArchive() {
+    if (!confirm(`Archive ${selectedIds.size} product(s)?`)) return;
+    await runBulk("/products/bulk-archive");
+  }
+
+  async function bulkUnarchive() {
+    if (!confirm(`Unarchive ${selectedIds.size} product(s)?`)) return;
+    await runBulk("/products/bulk-unarchive");
+  }
+
+  async function bulkSoftDelete() {
+    if (
+      !confirm(
+        `Move ${selectedIds.size} product(s) to Deleted?\n\n` +
+          `They can be restored later from the Deleted tab.`
+      )
+    )
+      return;
+    await runBulk("/products/bulk-soft-delete");
+  }
+
+  async function bulkRestore() {
+    if (!confirm(`Restore ${selectedIds.size} product(s)?`)) return;
+    await runBulk("/products/bulk-restore");
+  }
+
+  // ── Handlers ──
   async function handleSave(productData) {
     try {
       if (editingProduct) {
@@ -123,17 +436,41 @@
         await API.post("/products/", productData);
       }
       await fetchProducts();
+      await fetchCategories();
       closeModal();
     } catch (err) {
       alert("Failed to save product: " + (err.response?.data?.detail || "Unknown error"));
     }
   }
 
-  async function handleDelete(id) {
-    if (!confirm("Delete this product?")) return;
+  async function handleSoftDelete(product) {
+    const ok = confirm(
+      `Move "${product.name}" to Deleted?\n\n` +
+        `It will disappear from the Active list and can be restored ` +
+        `later from the Deleted tab.`
+    );
+    if (!ok) return;
     try {
-      await API.delete(`/products/${id}`);
+      await API.put(`/products/soft-delete/${product.id}`);
       fetchProducts();
+      fetchAttentionAlerts();
+    } catch (err) {
+      alert("Soft delete failed: " + (err.response?.data?.detail || "Unknown error"));
+    }
+  }
+
+  async function handlePermanentDelete(product) {
+    const ok = confirm(
+      `Permanently delete "${product.name}"?\n\n` +
+        `This cannot be undone. Products with sales history will be moved ` +
+        `to the Deleted tab instead of being removed.`
+    );
+    if (!ok) return;
+    try {
+      const res = await API.delete(`/products/${product.id}`);
+      if (res.data?.soft_deleted) alert(res.data.message);
+      fetchProducts();
+      fetchAttentionAlerts();
     } catch (err) {
       alert("Delete failed: " + (err.response?.data?.detail || "Unknown error"));
     }
@@ -161,6 +498,7 @@
     try {
       await API.put(`/products/restore/${id}`);
       fetchProducts();
+      fetchAttentionAlerts();
     } catch {
       alert("Restore failed");
     }
@@ -189,6 +527,69 @@
   function handleRestockSaved() {
     closeRestockModal();
     fetchProducts();
+    fetchAttentionAlerts();
+  }
+
+  function openDrawer(product) {
+    drawerProduct = product;
+    showDrawer = true;
+  }
+
+  function closeDrawer() {
+    showDrawer = false;
+    drawerProduct = null;
+  }
+
+  function handleDrawerEdit(product) {
+    closeDrawer();
+    openModal(product);
+  }
+
+  function handleDrawerRestock(product) {
+    closeDrawer();
+    openRestockModal(product);
+  }
+
+  async function handleDrawerArchive(product) {
+    await handleArchive(product.id);
+    closeDrawer();
+  }
+
+  async function handleDrawerUnarchive(product) {
+    await handleUnarchive(product.id);
+    closeDrawer();
+  }
+
+  async function handleDrawerSoftDelete(product) {
+    await handleSoftDelete(product);
+    closeDrawer();
+  }
+
+  function openBatchRestock() {
+    showBatchRestock = true;
+  }
+
+  function closeBatchRestock() {
+    showBatchRestock = false;
+  }
+
+  function handleBatchRestockSaved() {
+    fetchProducts();
+    fetchCategories();
+    fetchAttentionAlerts();
+  }
+
+  function openWizard() {
+    showWizard = true;
+  }
+  function closeWizard() {
+    showWizard = false;
+  }
+  async function handleWizardSaved() {
+    showWizard = false;
+    await fetchProducts();
+    await fetchCategories();
+    await fetchAttentionAlerts();
   }
 
   function predictionClass(pred) {
@@ -208,17 +609,37 @@
     if (d === 0) return "Restock today";
     return `~${d}d left`;
   }
+
+  function isLowStock(p) {
+    const threshold = Number(p.low_stock_threshold ?? 5);
+    const stock = Number(p.stock_qty ?? 0);
+    return !p.is_deleted && !p.archived && stock <= threshold;
+  }
+
+  function formatMoney(n) {
+    const v = Number(n || 0);
+    return v.toLocaleString(undefined, { maximumFractionDigits: 0 });
+  }
+
+  $: emptyCopy = (() => {
+    if (reviewMode) return "No products match the current alerts.";
+    if (search.trim() || selectedCategory) return "No products match your filters.";
+    if (filter === "active") return "No active products. Add one to get started.";
+    if (filter === "archived") return "No archived products. Nice and clean!";
+    if (filter === "deleted") return "No deleted products.";
+    return "No products yet. Add your first product to get started.";
+  })();
 </script>
 
 <Layout title="Products">
   <div class="products-header">
     <div class="filter-tabs">
-      <button type="button" class:active={filter === "all"} on:click={() => (filter = "all")}
-        >All</button
-      >
-      <button type="button" class:active={filter === "active"} on:click={() => (filter = "active")}
-        >Active</button
-      >
+      <button type="button" class:active={filter === "all"} on:click={() => (filter = "all")}>
+        All
+      </button>
+      <button type="button" class:active={filter === "active"} on:click={() => (filter = "active")}>
+        Active
+      </button>
       <button
         type="button"
         class:active={filter === "archived"}
@@ -230,47 +651,192 @@
         on:click={() => (filter = "deleted")}>Deleted</button
       >
     </div>
-    <button class="btn btn-primary add-btn" on:click={() => openModal()} type="button">
-      <Plus size={18} strokeWidth={2} />
-      <span>Add Product</span>
-    </button>
+    <div class="header-actions">
+      <button class="btn btn-secondary batch-btn" on:click={openWizard} type="button">
+        <Wand2 size={16} strokeWidth={2} />
+        <span>Add with variants</span>
+      </button>
+      <button class="btn btn-secondary batch-btn" on:click={openBatchRestock} type="button">
+        <Upload size={16} strokeWidth={2} />
+        <span>Batch Restock</span>
+      </button>
+      <button class="btn btn-primary add-btn" on:click={() => openModal()} type="button">
+        <Plus size={18} strokeWidth={2} />
+        <span>Add Product</span>
+      </button>
+    </div>
   </div>
+
+  {#if hasAttentionItems}
+    <div class="attention-banner">
+      <div class="att-icon">
+        <AlertTriangle size={22} strokeWidth={2} />
+      </div>
+      <div class="att-body">
+        {#if lowStockAlerts.length > 0}
+          <div class="att-line">
+            <strong>{lowStockAlerts.length}</strong>
+            product{lowStockAlerts.length === 1 ? "" : "s"} need{lowStockAlerts.length === 1
+              ? "s"
+              : ""} restocking
+            {#if criticalLowCount > 0}
+              <span class="att-critical">({criticalLowCount} critical)</span>
+            {/if}
+          </div>
+        {/if}
+        {#if slowMoverAlerts.length > 0}
+          <div class="att-line">
+            <TrendingDown size={14} strokeWidth={2} class="att-inline-icon" />
+            <strong>{slowMoverAlerts.length}</strong>
+            product{slowMoverAlerts.length === 1 ? "" : "s"} haven't sold in {ATTENTION_DAYS}+ days
+          </div>
+        {/if}
+      </div>
+      <div class="att-actions">
+        <button type="button" class="att-btn primary" on:click={reviewAlerts}>
+          Review →
+        </button>
+        <button type="button" class="att-btn ghost" on:click={dismissAttentionForToday}>
+          Dismiss for today
+        </button>
+      </div>
+    </div>
+  {/if}
+
+  {#if reviewMode}
+    <div class="review-strip">
+      <span class="review-label">
+        <Sparkles size={14} strokeWidth={2} />
+        Showing products from alerts only
+      </span>
+      <button type="button" class="review-exit" on:click={exitReview}>
+        <X size={14} strokeWidth={2} /> Clear review
+      </button>
+    </div>
+  {/if}
+
+  <div class="toolbar">
+    <div class="search-wrap">
+      <Search size={16} strokeWidth={2} class="search-icon" />
+      <input
+        type="text"
+        placeholder="Search by name or category…"
+        bind:value={search}
+        class="search-input"
+      />
+      {#if search}
+        <button class="search-clear" on:click={() => (search = "")} type="button" aria-label="Clear">
+          <X size={14} strokeWidth={2} />
+        </button>
+      {/if}
+    </div>
+
+    <select class="category-select" bind:value={selectedCategory}>
+      <option value="">All categories</option>
+      {#each categories as c}
+        <option value={c}>{c}</option>
+      {/each}
+    </select>
+  </div>
+
+  {#if !loading && filteredGroups.length > 0}
+    <div class="summary-strip">
+      <span class="sum-item">
+        <strong>{summary.count}</strong> product{summary.count === 1 ? "" : "s"}
+      </span>
+      <span class="sum-sep">·</span>
+      <span class="sum-item">
+        <Wallet size={13} strokeWidth={2} />
+        Stock value: <strong>MWK {formatMoney(summary.valueSell)}</strong>
+      </span>
+      <span class="sum-sep">·</span>
+      <span class="sum-item">
+        At cost: <strong>MWK {formatMoney(summary.valueCost)}</strong>
+      </span>
+      {#if summary.lowCount > 0}
+        <span class="sum-sep">·</span>
+        <span class="sum-item warn">
+          <AlertTriangle size={13} strokeWidth={2} /> <strong>{summary.lowCount}</strong> low
+          stock
+        </span>
+      {/if}
+    </div>
+  {/if}
 
   {#if loading}
     <p class="loading-text">Loading products...</p>
-  {:else if grouped.length === 0}
+  {:else if filteredGroups.length === 0}
     <div class="empty-state">
       <PackageX size={48} strokeWidth={1.25} />
-      <p>No products in this category</p>
-      <button class="btn btn-primary" on:click={() => openModal()} type="button">
-        <Plus size={16} strokeWidth={2} /> Add your first product
-      </button>
+      <p>{emptyCopy}</p>
+      {#if !reviewMode && !search && !selectedCategory && filter !== "deleted" && filter !== "archived"}
+        <button class="btn btn-primary" on:click={() => openModal()} type="button">
+          <Plus size={16} strokeWidth={2} /> Add your first product
+        </button>
+      {/if}
     </div>
   {:else}
     <div class="products-container">
-      <!-- Desktop Table -->
       <div class="table-wrapper">
         <table class="products-table">
           <thead>
             <tr>
-              <th>Name</th>
-              <th>Category</th>
-              <th>Price</th>
-              <th>Stock</th>
+              <th class="checkbox-col">
+                <input
+                  type="checkbox"
+                  checked={allVisibleSelected}
+                  indeterminate={someVisibleSelected}
+                  on:change={toggleSelectAll}
+                  aria-label="Select all"
+                />
+              </th>
+              <th>
+                <button type="button" class="sort-btn" on:click={() => handleSort("name")}>
+                  Name
+                  <svelte:component this={sortIcon("name")} size={13} strokeWidth={2} />
+                </button>
+              </th>
+              <th>
+                <button type="button" class="sort-btn" on:click={() => handleSort("category")}>
+                  Category
+                  <svelte:component this={sortIcon("category")} size={13} strokeWidth={2} />
+                </button>
+              </th>
+              <th>
+                <button type="button" class="sort-btn" on:click={() => handleSort("selling_price")}>
+                  Price
+                  <svelte:component this={sortIcon("selling_price")} size={13} strokeWidth={2} />
+                </button>
+              </th>
+              <th>
+                <button type="button" class="sort-btn" on:click={() => handleSort("stock_qty")}>
+                  Stock
+                  <svelte:component this={sortIcon("stock_qty")} size={13} strokeWidth={2} />
+                </button>
+              </th>
               <th>Status</th>
               <th class="actions-col">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {#each grouped as group}
+            {#each filteredGroups as group}
               {@const pred = predictions[group.parent.id]}
-              <tr class:parent-row={group.variants.length > 0}>
+              {@const parentLow = isLowStock(group.parent)}
+              <tr class:parent-row={group.variants.length > 0} class:row-selected={isSelected(group.parent.id)}>
+                <td class="checkbox-col">
+                  <input
+                    type="checkbox"
+                    checked={isSelected(group.parent.id)}
+                    on:change={() => toggleSelect(group.parent.id)}
+                    aria-label={`Select ${group.parent.name}`}
+                  />
+                </td>
                 <td data-label="Name">
-                  <div class="name-cell">
+                  <div class="name-cell name-clickable" on:click={() => openDrawer(group.parent)} on:keydown={(e) => e.key === "Enter" && openDrawer(group.parent)} role="button" tabindex="0">
                     {#if group.variants.length > 0}
                       <button
                         class="expand-btn"
-                        on:click={() => toggleExpand(group.parent.id)}
+                        on:click|stopPropagation={() => toggleExpand(group.parent.id)}
                         type="button"
                         aria-label="Toggle variants"
                       >
@@ -303,7 +869,7 @@
                     <span class="muted">—</span>
                   {:else}
                     <div class="stock-cell">
-                      <span>{group.parent.stock_qty}</span>
+                      <span class:low-stock-num={parentLow}>{group.parent.stock_qty}</span>
                       {#if pred && pred.method !== "no_data"}
                         <span class="prediction-tag {predictionClass(pred)}">
                           <Clock size={10} strokeWidth={2} />
@@ -325,58 +891,38 @@
                 <td data-label="Actions">
                   <div class="actions">
                     {#if group.parent.is_deleted}
-                      <button
-                        class="action-btn"
-                        on:click={() => handleRestore(group.parent.id)}
-                        title="Restore"
-                        type="button"
-                      >
+                      <button class="action-btn" on:click={() => handleRestore(group.parent.id)} title="Restore" type="button">
                         <RotateCcw size={16} strokeWidth={2} />
+                      </button>
+                      <button class="action-btn danger" on:click={() => handlePermanentDelete(group.parent)} title="Permanently delete" type="button">
+                        <Trash size={16} strokeWidth={2} />
                       </button>
                     {:else}
                       {#if group.variants.length === 0}
                         <button
-                          class="action-btn"
+                          class="action-btn restock-pill"
+                          class:critical={parentLow}
                           on:click={() => openRestockModal(group.parent)}
-                          title="Restock"
+                          title={parentLow ? "Low stock — restock now" : "Restock"}
                           type="button"
                         >
-                          <PackagePlus size={16} strokeWidth={2} />
+                          <PackagePlus size={14} strokeWidth={2} />
+                          {#if parentLow}<span class="pill-label">Restock</span>{/if}
                         </button>
                       {/if}
-                      <button
-                        class="action-btn"
-                        on:click={() => openModal(group.parent)}
-                        title="Edit"
-                        type="button"
-                      >
+                      <button class="action-btn" on:click={() => openModal(group.parent)} title="Edit" type="button">
                         <Pencil size={16} strokeWidth={2} />
                       </button>
                       {#if group.parent.archived}
-                        <button
-                          class="action-btn"
-                          on:click={() => handleUnarchive(group.parent.id)}
-                          title="Unarchive"
-                          type="button"
-                        >
+                        <button class="action-btn" on:click={() => handleUnarchive(group.parent.id)} title="Unarchive" type="button">
                           <RotateCcw size={16} strokeWidth={2} />
                         </button>
                       {:else}
-                        <button
-                          class="action-btn"
-                          on:click={() => handleArchive(group.parent.id)}
-                          title="Archive"
-                          type="button"
-                        >
+                        <button class="action-btn" on:click={() => handleArchive(group.parent.id)} title="Archive" type="button">
                           <Archive size={16} strokeWidth={2} />
                         </button>
                       {/if}
-                      <button
-                        class="action-btn danger"
-                        on:click={() => handleDelete(group.parent.id)}
-                        title="Delete"
-                        type="button"
-                      >
+                      <button class="action-btn danger-outline" on:click={() => handleSoftDelete(group.parent)} title="Soft delete" type="button">
                         <Trash2 size={16} strokeWidth={2} />
                       </button>
                     {/if}
@@ -387,9 +933,18 @@
               {#if expanded[group.parent.id]}
                 {#each group.variants as variant}
                   {@const vpred = predictions[variant.id]}
-                  <tr class="variant-row">
+                  {@const vLow = isLowStock(variant)}
+                  <tr class="variant-row" class:row-selected={isSelected(variant.id)}>
+                    <td class="checkbox-col">
+                      <input
+                        type="checkbox"
+                        checked={isSelected(variant.id)}
+                        on:change={() => toggleSelect(variant.id)}
+                        aria-label={`Select ${variant.name}`}
+                      />
+                    </td>
                     <td data-label="Name">
-                      <div class="name-cell variant-name">
+                      <div class="name-cell variant-name name-clickable" on:click={() => openDrawer(variant)} on:keydown={(e) => e.key === "Enter" && openDrawer(variant)} role="button" tabindex="0">
                         <span class="variant-indent">↳</span>
                         {variant.name}
                       </div>
@@ -398,7 +953,7 @@
                     <td data-label="Price">MWK {variant.selling_price?.toLocaleString()}</td>
                     <td data-label="Stock">
                       <div class="stock-cell">
-                        <span>{variant.stock_qty}</span>
+                        <span class:low-stock-num={vLow}>{variant.stock_qty}</span>
                         {#if vpred && vpred.method !== "no_data"}
                           <span class="prediction-tag {predictionClass(vpred)}">
                             <Clock size={10} strokeWidth={2} />
@@ -408,40 +963,37 @@
                       </div>
                     </td>
                     <td data-label="Status">
-                      <span
-                        class="status"
-                        class:archived={variant.archived}
-                        class:deleted={variant.is_deleted}
-                      >
+                      <span class="status" class:archived={variant.archived} class:deleted={variant.is_deleted}>
                         {#if variant.is_deleted}Deleted{:else if variant.archived}Archived{:else}Active{/if}
                       </span>
                     </td>
                     <td data-label="Actions">
                       <div class="actions">
-                        <button
-                          class="action-btn"
-                          on:click={() => openRestockModal(variant)}
-                          title="Restock"
-                          type="button"
-                        >
-                          <PackagePlus size={16} strokeWidth={2} />
-                        </button>
-                        <button
-                          class="action-btn"
-                          on:click={() => openModal(variant)}
-                          title="Edit"
-                          type="button"
-                        >
-                          <Pencil size={16} strokeWidth={2} />
-                        </button>
-                        <button
-                          class="action-btn danger"
-                          on:click={() => handleDelete(variant.id)}
-                          title="Delete"
-                          type="button"
-                        >
-                          <Trash2 size={16} strokeWidth={2} />
-                        </button>
+                        {#if variant.is_deleted}
+                          <button class="action-btn" on:click={() => handleRestore(variant.id)} title="Restore" type="button">
+                            <RotateCcw size={16} strokeWidth={2} />
+                          </button>
+                          <button class="action-btn danger" on:click={() => handlePermanentDelete(variant)} title="Permanently delete" type="button">
+                            <Trash size={16} strokeWidth={2} />
+                          </button>
+                        {:else}
+                          <button
+                            class="action-btn restock-pill"
+                            class:critical={vLow}
+                            on:click={() => openRestockModal(variant)}
+                            title={vLow ? "Low stock — restock now" : "Restock"}
+                            type="button"
+                          >
+                            <PackagePlus size={14} strokeWidth={2} />
+                            {#if vLow}<span class="pill-label">Restock</span>{/if}
+                          </button>
+                          <button class="action-btn" on:click={() => openModal(variant)} title="Edit" type="button">
+                            <Pencil size={16} strokeWidth={2} />
+                          </button>
+                          <button class="action-btn danger-outline" on:click={() => handleSoftDelete(variant)} title="Soft delete" type="button">
+                            <Trash2 size={16} strokeWidth={2} />
+                          </button>
+                        {/if}
                       </div>
                     </td>
                   </tr>
@@ -452,13 +1004,26 @@
         </table>
       </div>
 
-      <!-- Mobile Cards -->
       <div class="mobile-cards">
-        {#each grouped as group}
+        {#each filteredGroups as group}
           {@const pred = predictions[group.parent.id]}
-          <div class="product-card">
+          {@const parentLow = isLowStock(group.parent)}
+          <div class="product-card" class:low={parentLow}>
             <div class="card-header">
-              <div class="name-cell">
+              <input
+                type="checkbox"
+                class="card-checkbox"
+                checked={isSelected(group.parent.id)}
+                on:change={() => toggleSelect(group.parent.id)}
+                aria-label={`Select ${group.parent.name}`}
+              />
+              <div
+                class="name-cell"
+                on:click={() => openDrawer(group.parent)}
+                on:keydown={(e) => e.key === "Enter" && openDrawer(group.parent)}
+                role="button"
+                tabindex="0"
+              >
                 <h3>{group.parent.name}</h3>
                 {#if group.variants.length > 0}
                   <span class="variant-badge">
@@ -483,7 +1048,7 @@
                 </div>
                 <div>
                   <span>Stock</span>
-                  <strong>
+                  <strong class:low-stock-num={parentLow}>
                     {group.parent.stock_qty}
                     {#if pred && pred.method !== "no_data"}
                       <span class="prediction-tag {predictionClass(pred)}">
@@ -497,11 +1062,7 @@
             </div>
 
             {#if group.variants.length > 0}
-              <button
-                class="expand-mobile-btn"
-                on:click={() => toggleExpand(group.parent.id)}
-                type="button"
-              >
+              <button class="expand-mobile-btn" on:click={() => toggleExpand(group.parent.id)} type="button">
                 {#if expanded[group.parent.id]}
                   Hide {group.variants.length} variants
                 {:else}
@@ -513,41 +1074,43 @@
                 <div class="variant-list">
                   {#each group.variants as variant}
                     {@const vpred = predictions[variant.id]}
+                    {@const vLow = isLowStock(variant)}
                     <div class="variant-item">
-                      <div>
+                      <input
+                        type="checkbox"
+                        checked={isSelected(variant.id)}
+                        on:change={() => toggleSelect(variant.id)}
+                        aria-label={`Select ${variant.name}`}
+                      />
+                      <div class="variant-text">
                         <div class="variant-name">{variant.name}</div>
                         <div class="variant-meta">
-                          MWK {variant.selling_price?.toLocaleString()} · Stock {variant.stock_qty}
+                          MWK {variant.selling_price?.toLocaleString()} · Stock
+                          <span class:low-stock-num={vLow}>{variant.stock_qty}</span>
                           {#if vpred && vpred.method !== "no_data"}
                             · <span class="{predictionClass(vpred)}">{predictionText(vpred)}</span>
                           {/if}
                         </div>
                       </div>
                       <div class="variant-actions">
-                        <button
-                          class="icon-btn"
-                          on:click={() => openRestockModal(variant)}
-                          type="button"
-                          aria-label="Restock"
-                        >
-                          <PackagePlus size={14} />
-                        </button>
-                        <button
-                          class="icon-btn"
-                          on:click={() => openModal(variant)}
-                          type="button"
-                          aria-label="Edit"
-                        >
-                          <Pencil size={14} />
-                        </button>
-                        <button
-                          class="icon-btn danger"
-                          on:click={() => handleDelete(variant.id)}
-                          type="button"
-                          aria-label="Delete"
-                        >
-                          <Trash2 size={14} />
-                        </button>
+                        {#if variant.is_deleted}
+                          <button class="icon-btn" on:click={() => handleRestore(variant.id)} type="button" aria-label="Restore">
+                            <RotateCcw size={14} />
+                          </button>
+                          <button class="icon-btn danger" on:click={() => handlePermanentDelete(variant)} type="button" aria-label="Permanently delete">
+                            <Trash size={14} />
+                          </button>
+                        {:else}
+                          <button class="icon-btn" class:critical={vLow} on:click={() => openRestockModal(variant)} type="button" aria-label="Restock">
+                            <PackagePlus size={14} />
+                          </button>
+                          <button class="icon-btn" on:click={() => openModal(variant)} type="button" aria-label="Edit">
+                            <Pencil size={14} />
+                          </button>
+                          <button class="icon-btn danger" on:click={() => handleSoftDelete(variant)} type="button" aria-label="Soft delete">
+                            <Trash2 size={14} />
+                          </button>
+                        {/if}
                       </div>
                     </div>
                   {/each}
@@ -557,47 +1120,68 @@
 
             <div class="card-actions">
               {#if group.parent.is_deleted}
-                <button
-                  class="action-btn full"
-                  on:click={() => handleRestore(group.parent.id)}
-                  type="button"
-                >
+                <button class="action-btn full" on:click={() => handleRestore(group.parent.id)} type="button">
                   <RotateCcw size={16} strokeWidth={2} /> Restore
+                </button>
+                <button class="action-btn full danger-outline" on:click={() => handlePermanentDelete(group.parent)} type="button">
+                  <Trash size={16} strokeWidth={2} /> Permanently Delete
                 </button>
               {:else}
                 {#if group.variants.length === 0}
-                  <button
-                    class="action-btn full"
-                    on:click={() => openRestockModal(group.parent)}
-                    type="button"
-                  >
-                    <PackagePlus size={16} strokeWidth={2} /> Restock
+                  <button class="action-btn full" class:critical={parentLow} on:click={() => openRestockModal(group.parent)} type="button">
+                    <PackagePlus size={16} strokeWidth={2} />
+                    {parentLow ? "Restock Now" : "Restock"}
                   </button>
                 {/if}
                 <button class="action-btn full" on:click={() => openModal(group.parent)} type="button">
                   <Pencil size={16} strokeWidth={2} /> Edit
                 </button>
                 {#if group.parent.archived}
-                  <button
-                    class="action-btn full"
-                    on:click={() => handleUnarchive(group.parent.id)}
-                    type="button"
-                  >
+                  <button class="action-btn full" on:click={() => handleUnarchive(group.parent.id)} type="button">
                     <RotateCcw size={16} strokeWidth={2} /> Unarchive
                   </button>
                 {:else}
-                  <button
-                    class="action-btn full"
-                    on:click={() => handleArchive(group.parent.id)}
-                    type="button"
-                  >
+                  <button class="action-btn full" on:click={() => handleArchive(group.parent.id)} type="button">
                     <Archive size={16} strokeWidth={2} /> Archive
                   </button>
                 {/if}
+                <button class="action-btn full danger-outline" on:click={() => handleSoftDelete(group.parent)} type="button">
+                  <Trash2 size={16} strokeWidth={2} /> Soft Delete
+                </button>
               {/if}
             </div>
           </div>
         {/each}
+      </div>
+    </div>
+  {/if}
+
+  <!-- ── Bulk actions bar (Tier 4.2) ── -->
+  {#if selectedIds.size > 0}
+    <div class="bulk-bar" role="region" aria-label="Bulk actions">
+      <span class="bulk-count">{selectedIds.size} selected</span>
+      <div class="bulk-actions">
+        {#if filter === "archived"}
+          <button type="button" class="bulk-btn" on:click={bulkUnarchive} disabled={bulkWorking}>
+            <RotateCcw size={14} /> Unarchive
+          </button>
+        {:else if filter === "deleted"}
+          <button type="button" class="bulk-btn" on:click={bulkRestore} disabled={bulkWorking}>
+            <RotateCcw size={14} /> Restore
+          </button>
+        {:else}
+          <button type="button" class="bulk-btn" on:click={bulkArchive} disabled={bulkWorking}>
+            <Archive size={14} /> Archive
+          </button>
+        {/if}
+        {#if filter !== "deleted"}
+          <button type="button" class="bulk-btn danger" on:click={bulkSoftDelete} disabled={bulkWorking}>
+            <Trash2 size={14} /> Soft delete
+          </button>
+        {/if}
+        <button type="button" class="bulk-btn ghost" on:click={clearSelection} disabled={bulkWorking}>
+          <X size={14} /> Clear
+        </button>
       </div>
     </div>
   {/if}
@@ -618,24 +1202,364 @@
       on:close={closeRestockModal}
     />
   {/if}
+
+  {#if showDrawer && drawerProduct}
+    <ProductDrawer
+      product={drawerProduct}
+      on:close={closeDrawer}
+      on:edit={(e) => handleDrawerEdit(e.detail)}
+      on:restock={(e) => handleDrawerRestock(e.detail)}
+      on:archive={(e) => handleDrawerArchive(e.detail)}
+      on:unarchive={(e) => handleDrawerUnarchive(e.detail)}
+      on:softdelete={(e) => handleDrawerSoftDelete(e.detail)}
+    />
+  {/if}
+
+  {#if showBatchRestock}
+    <BatchRestockModal
+      on:close={closeBatchRestock}
+      on:saved={handleBatchRestockSaved}
+    />
+  {/if}
+
+  {#if showWizard}
+    <VariantWizard on:close={closeWizard} on:saved={handleWizardSaved} />
+  {/if}
 </Layout>
 
 <style>
+  /* ── Bulk selection bar ── */
+  .bulk-bar {
+    position: fixed;
+    bottom: 1rem;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    padding: 0.55rem 0.75rem;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    box-shadow: 0 10px 25px -8px rgba(0, 0, 0, 0.25);
+    z-index: 900;
+    max-width: 95vw;
+    flex-wrap: wrap;
+  }
+  .bulk-count {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text, #111827);
+    padding-left: 0.3rem;
+  }
+  .bulk-actions {
+    display: flex;
+    gap: 0.35rem;
+    flex-wrap: wrap;
+  }
+  .bulk-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    border: 1px solid var(--border, #e5e7eb);
+    background: var(--surface, #fff);
+    color: var(--text, #111827);
+    border-radius: 8px;
+    padding: 0.4rem 0.75rem;
+    font-size: 0.82rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .bulk-btn:hover:not(:disabled) {
+    border-color: var(--primary, #0f6b3e);
+    color: var(--primary, #0f6b3e);
+  }
+  .bulk-btn.danger {
+    color: #b91c1c;
+    border-color: #fecaca;
+  }
+  .bulk-btn.danger:hover:not(:disabled) {
+    background: #dc2626;
+    border-color: #dc2626;
+    color: #fff;
+  }
+  .bulk-btn.ghost {
+    color: var(--text-light, #6b7280);
+  }
+  .bulk-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .checkbox-col {
+    width: 40px;
+    text-align: center;
+    padding-left: 0.75rem !important;
+    padding-right: 0.25rem !important;
+  }
+  .checkbox-col input {
+    width: auto;
+    cursor: pointer;
+    accent-color: var(--primary, #0f6b3e);
+  }
+
+  .row-selected {
+    background: #f0fdf4 !important;
+  }
+
+  .card-checkbox {
+    width: auto;
+    margin-right: 0.5rem;
+    cursor: pointer;
+    accent-color: var(--primary, #0f6b3e);
+  }
+
+  .variant-item {
+    gap: 0.5rem;
+  }
+  .variant-item input[type="checkbox"] {
+    width: auto;
+    cursor: pointer;
+    accent-color: var(--primary, #0f6b3e);
+    flex-shrink: 0;
+  }
+  .variant-text {
+    flex: 1;
+    min-width: 0;
+  }
+
+  /* Existing CSS preserved */
+  .attention-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    background: linear-gradient(135deg, #fffbeb 0%, #ffffff 100%);
+    border: 1px solid #fcd34d;
+    border-left: 4px solid #d97706;
+    border-radius: 10px;
+    padding: 0.85rem 1rem;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+  }
+  .att-icon {
+    color: #b45309;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    padding-top: 2px;
+  }
+  .att-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+  .att-line {
+    font-size: 0.9rem;
+    color: #111827;
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    flex-wrap: wrap;
+  }
+  .att-critical {
+    color: #b91c1c;
+    font-weight: 600;
+  }
+  .att-inline-icon {
+    color: #7c3aed;
+  }
+  .att-actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+  }
+  .att-btn {
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    font-size: 0.82rem;
+    font-weight: 600;
+    border-radius: 7px;
+    padding: 0.4rem 0.7rem;
+    transition: all 0.15s;
+    white-space: nowrap;
+  }
+  .att-btn.primary {
+    background: #d97706;
+    color: white;
+  }
+  .att-btn.primary:hover {
+    background: #b45309;
+  }
+  .att-btn.ghost {
+    color: #6b7280;
+    border: 1px solid #e5e7eb;
+    background: white;
+  }
+  .att-btn.ghost:hover {
+    color: #111827;
+    border-color: #9ca3af;
+  }
+
+  .review-strip {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: #eef2ff;
+    border: 1px solid #c7d2fe;
+    border-radius: 8px;
+    padding: 0.5rem 0.85rem;
+    margin-bottom: 1rem;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .review-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.85rem;
+    color: #3730a3;
+    font-weight: 500;
+  }
+  .review-exit {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    border: none;
+    background: white;
+    border-radius: 6px;
+    color: #4f46e5;
+    font-size: 0.78rem;
+    font-weight: 600;
+    padding: 0.35rem 0.6rem;
+    cursor: pointer;
+  }
+  .review-exit:hover {
+    background: #e0e7ff;
+  }
+
+  .toolbar {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.9rem;
+    flex-wrap: wrap;
+  }
+  .search-wrap {
+    position: relative;
+    flex: 1 1 260px;
+    min-width: 0;
+  }
+  .search-icon {
+    position: absolute;
+    left: 0.75rem;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #94a3b8;
+    pointer-events: none;
+  }
+  .search-input {
+    width: 100%;
+    padding: 0.55rem 2rem 0.55rem 2.1rem;
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+    background: var(--surface, #fff);
+    color: var(--text, #111827);
+    font-size: 0.9rem;
+    box-sizing: border-box;
+  }
+  .search-input:focus {
+    outline: none;
+    border-color: var(--primary, #0f6b3e);
+    box-shadow: 0 0 0 3px rgba(15, 107, 62, 0.1);
+  }
+  .search-clear {
+    position: absolute;
+    right: 0.55rem;
+    top: 50%;
+    transform: translateY(-50%);
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    color: #94a3b8;
+    padding: 0.2rem;
+    border-radius: 4px;
+    line-height: 0;
+  }
+  .search-clear:hover {
+    color: #111827;
+    background: #f3f4f6;
+  }
+  .category-select {
+    padding: 0.55rem 0.75rem;
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+    background: var(--surface, #fff);
+    color: var(--text, #111827);
+    font-size: 0.9rem;
+    cursor: pointer;
+    min-width: 160px;
+    flex: 0 1 200px;
+  }
+  .category-select:focus {
+    outline: none;
+    border-color: var(--primary, #0f6b3e);
+    box-shadow: 0 0 0 3px rgba(15, 107, 62, 0.1);
+  }
+
+  .summary-strip {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.4rem 0.5rem;
+    padding: 0.55rem 0.85rem;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+    margin-bottom: 0.9rem;
+    font-size: 0.82rem;
+    color: var(--text-light, #6b7280);
+  }
+  .sum-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+  }
+  .sum-item strong {
+    color: var(--text, #111827);
+    font-weight: 600;
+  }
+  .sum-item.warn {
+    color: #b45309;
+  }
+  .sum-item.warn strong {
+    color: #b45309;
+  }
+  .sum-sep {
+    color: #d1d5db;
+  }
+
   .products-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 1.5rem;
+    margin-bottom: 1rem;
     flex-wrap: wrap;
     gap: 0.75rem;
   }
-
+  .header-actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
   .filter-tabs {
     display: flex;
     gap: 0.35rem;
     flex-wrap: wrap;
   }
-
   .filter-tabs button {
     padding: 0.45rem 0.9rem;
     border-radius: 8px;
@@ -647,53 +1571,57 @@
     color: var(--text, #111827);
     transition: all 0.15s;
   }
-
   .filter-tabs button:hover {
     border-color: var(--primary, #0f6b3e);
     color: var(--primary, #0f6b3e);
   }
-
   .filter-tabs button.active {
     background: var(--primary, #0f6b3e);
     color: white;
     border-color: var(--primary, #0f6b3e);
   }
-
-  .add-btn {
+  .btn {
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
     padding: 0.55rem 1rem;
     border-radius: 8px;
-    background: var(--primary, #0f6b3e);
-    color: white;
     border: none;
     cursor: pointer;
     font-weight: 500;
     font-size: 0.9rem;
-    transition: background 0.15s;
+    transition: all 0.15s;
   }
-
-  .add-btn:hover {
+  .btn-primary {
+    background: var(--primary, #0f6b3e);
+    color: white;
+  }
+  .btn-primary:hover {
     background: var(--primary-dark, #0a4f2e);
   }
-
+  .btn-secondary {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    color: var(--text, #111827);
+  }
+  .btn-secondary:hover {
+    border-color: var(--primary, #0f6b3e);
+    color: var(--primary, #0f6b3e);
+  }
   .table-wrapper {
     overflow-x: auto;
     background: var(--surface, #fff);
     border-radius: 10px;
     border: 1px solid var(--border, #e5e7eb);
   }
-
   .products-table {
     width: 100%;
     border-collapse: collapse;
     font-size: 0.9rem;
   }
-
   .products-table th {
     text-align: left;
-    padding: 0.85rem 1rem;
+    padding: 0.75rem 1rem;
     background: var(--background, #f9fafb);
     font-weight: 600;
     color: var(--text-light, #6b7280);
@@ -702,42 +1630,57 @@
     letter-spacing: 0.4px;
     white-space: nowrap;
   }
-
   .products-table td {
     padding: 0.9rem 1rem;
     border-top: 1px solid var(--border, #e5e7eb);
     color: var(--text, #111827);
   }
-
+  .sort-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+    text-transform: inherit;
+    letter-spacing: inherit;
+    padding: 0;
+  }
+  .sort-btn:hover {
+    color: var(--primary, #0f6b3e);
+  }
   .parent-row {
     background: var(--surface, #fff);
   }
-
   .variant-row {
     background: var(--background, #f9fafb);
     font-size: 0.88rem;
   }
-
   .variant-row td {
     padding-top: 0.65rem;
     padding-bottom: 0.65rem;
   }
-
   .name-cell {
     display: flex;
     align-items: center;
     gap: 0.5rem;
   }
-
+  .name-clickable {
+    cursor: pointer;
+  }
+  .name-clickable:hover strong {
+    color: var(--primary, #0f6b3e);
+    text-decoration: underline;
+  }
   .variant-name {
     padding-left: 1.5rem;
   }
-
   .variant-indent {
     color: var(--text-light, #6b7280);
     font-weight: 400;
   }
-
   .expand-btn {
     background: none;
     border: none;
@@ -749,12 +1692,10 @@
     line-height: 0;
     border-radius: 4px;
   }
-
   .expand-btn:hover {
     background: var(--background, #f9fafb);
     color: var(--text, #111827);
   }
-
   .variant-badge {
     display: inline-flex;
     align-items: center;
@@ -766,18 +1707,19 @@
     padding: 0.15rem 0.45rem;
     border-radius: 20px;
   }
-
   .muted {
     color: var(--text-light, #6b7280);
     font-size: 0.85rem;
   }
-
   .stock-cell {
     display: flex;
     flex-direction: column;
     gap: 0.2rem;
   }
-
+  .low-stock-num {
+    color: #b91c1c;
+    font-weight: 700;
+  }
   .prediction-tag {
     display: inline-flex;
     align-items: center;
@@ -788,26 +1730,21 @@
     border-radius: 20px;
     white-space: nowrap;
   }
-
   .pred-critical {
     background: #fee2e2;
     color: #991b1b;
   }
-
   .pred-soon {
     background: #fef3c7;
     color: #92400e;
   }
-
   .pred-ok {
     background: #dcfce7;
     color: #166534;
   }
-
   .actions-col {
-    width: 160px;
+    width: 220px;
   }
-
   .status {
     display: inline-block;
     padding: 0.2rem 0.55rem;
@@ -817,27 +1754,25 @@
     font-size: 0.75rem;
     font-weight: 600;
   }
-
   .status.archived {
     background: #fef3c7;
     color: #92400e;
   }
-
   .status.deleted {
     background: #fee2e2;
     color: #991b1b;
   }
-
   .actions {
     display: flex;
     gap: 0.25rem;
+    flex-wrap: wrap;
+    align-items: center;
   }
-
   .action-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 0.35rem;
+    gap: 0.3rem;
     padding: 0.4rem 0.5rem;
     background: transparent;
     border: 1px solid var(--border, #e5e7eb);
@@ -848,92 +1783,115 @@
     font-size: 0.85rem;
     font-weight: 500;
   }
-
   .action-btn:hover {
     background: var(--background, #f9fafb);
     border-color: var(--primary, #0f6b3e);
     color: var(--primary, #0f6b3e);
   }
-
   .action-btn.danger:hover {
     border-color: #dc2626;
     color: #dc2626;
     background: #fef2f2;
   }
-
+  .action-btn.danger-outline {
+    color: #b91c1c;
+    border-color: #fecaca;
+  }
+  .action-btn.danger-outline:hover {
+    border-color: #dc2626;
+    color: #ffffff;
+    background: #dc2626;
+  }
   .action-btn.full {
     flex: 1;
     padding: 0.55rem;
   }
-
+  .action-btn.restock-pill {
+    padding: 0.4rem 0.55rem;
+  }
+  .action-btn.restock-pill.critical {
+    background: #dc2626;
+    border-color: #dc2626;
+    color: #ffffff;
+    font-weight: 600;
+  }
+  .action-btn.restock-pill.critical:hover {
+    background: #b91c1c;
+    border-color: #b91c1c;
+    color: #ffffff;
+  }
+  .pill-label {
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
   .loading-text {
     text-align: center;
     padding: 2rem;
     color: var(--text-light, #6b7280);
   }
-
   .empty-state {
     text-align: center;
     padding: 3rem 1rem;
     color: var(--text-light, #6b7280);
   }
-
   .empty-state p {
     margin: 1rem 0;
     font-size: 1rem;
   }
-
   .mobile-cards {
     display: none;
     flex-direction: column;
     gap: 0.75rem;
   }
-
   .product-card {
     background: var(--surface, #fff);
     border: 1px solid var(--border, #e5e7eb);
     border-radius: 10px;
     padding: 1rem;
   }
-
+  .product-card.low {
+    border-left: 3px solid #dc2626;
+  }
   .card-header {
     display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
+    justify-content: flex-start;
+    align-items: center;
     gap: 0.5rem;
     margin-bottom: 0.75rem;
   }
-
+  .card-header .name-cell {
+    flex: 1;
+    min-width: 0;
+    cursor: pointer;
+  }
+  .card-header .status {
+    flex-shrink: 0;
+  }
   .card-header h3 {
     font-size: 1rem;
     font-weight: 600;
     margin: 0;
     color: var(--text, #111827);
   }
-
   .details {
     display: flex;
     flex-direction: column;
     gap: 0.4rem;
     margin-bottom: 1rem;
   }
-
   .details div {
     display: flex;
     justify-content: space-between;
     align-items: center;
     font-size: 0.9rem;
   }
-
   .details span {
     color: var(--text-light, #6b7280);
   }
-
   .details strong {
     color: var(--text, #111827);
     font-weight: 600;
   }
-
   .expand-mobile-btn {
     width: 100%;
     padding: 0.55rem;
@@ -946,11 +1904,9 @@
     color: var(--text, #111827);
     margin-bottom: 0.5rem;
   }
-
   .variant-list {
     margin-bottom: 0.75rem;
   }
-
   .variant-item {
     display: flex;
     justify-content: space-between;
@@ -958,22 +1914,18 @@
     padding: 0.55rem 0;
     border-bottom: 1px solid var(--border, #e5e7eb);
   }
-
   .variant-item:last-child {
     border-bottom: none;
   }
-
   .variant-meta {
     font-size: 0.78rem;
     color: var(--text-light, #6b7280);
     margin-top: 0.15rem;
   }
-
   .variant-actions {
     display: flex;
     gap: 0.25rem;
   }
-
   .icon-btn {
     display: inline-flex;
     align-items: center;
@@ -987,11 +1939,14 @@
     color: var(--text, #111827);
     padding: 0;
   }
-
+  .icon-btn.critical {
+    background: #dc2626;
+    border-color: #dc2626;
+    color: white;
+  }
   .icon-btn.danger {
     color: var(--danger, #dc2626);
   }
-
   .card-actions {
     display: flex;
     gap: 0.4rem;
@@ -1003,7 +1958,10 @@
       flex-direction: column;
       align-items: stretch;
     }
-    .add-btn {
+    .header-actions {
+      flex-direction: column;
+    }
+    .btn {
       justify-content: center;
       padding: 0.65rem;
     }
@@ -1012,6 +1970,33 @@
     }
     .mobile-cards {
       display: flex;
+    }
+    .att-actions {
+      width: 100%;
+    }
+    .att-btn {
+      flex: 1;
+      justify-content: center;
+      text-align: center;
+    }
+    .category-select {
+      flex: 1 1 100%;
+    }
+    .bulk-bar {
+      left: 0.5rem;
+      right: 0.5rem;
+      transform: none;
+      bottom: 0.5rem;
+    }
+  }
+
+  @media (max-width: 480px) {
+    .summary-strip {
+      font-size: 0.75rem;
+      padding: 0.5rem 0.7rem;
+    }
+    .att-body {
+      font-size: 0.82rem;
     }
   }
 </style>

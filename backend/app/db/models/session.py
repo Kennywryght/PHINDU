@@ -27,7 +27,17 @@ class Session(Base):
     cash_removed = Column(Float, default=0.0)
     cash_added = Column(Float, default=0.0)
 
+    # ── Reconciliation (Session deep-dive) ─────────────────────
+    # Frozen snapshot at close — so past reports stay accurate even if
+    # the underlying data is later edited (e.g. an expense is voided).
+    expected_closing_balance = Column(Float, nullable=True)
+    # positive = OVER (drawer has more than expected)
+    # negative = SHORT (drawer has less than expected)
+    # null     = session still open or reconciliation skipped
+    cash_discrepancy = Column(Float, nullable=True)
+    discrepancy_reason = Column(String, nullable=True)
+
     # Relationships
     shop = relationship("Shop", back_populates="sessions")
     sales = relationship("Sale", back_populates="session")
-    payments = relationship("Payment", back_populates="session")  # 🔧 NEW
+    payments = relationship("Payment", back_populates="session")

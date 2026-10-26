@@ -117,6 +117,7 @@ def test_update_stock_creates_batch(owner_client, sample_product):
 
 
 def test_delete_product_soft_when_used(owner_client, sample_product):
+    """DELETE on a product with sale history → soft-deletes, flags soft_deleted=True."""
     owner_client.post(
         "/sales/",
         json={"items": [{"product_id": sample_product["id"], "quantity": 1}]},
@@ -124,8 +125,14 @@ def test_delete_product_soft_when_used(owner_client, sample_product):
 
     res = owner_client.delete(f"/products/{sample_product['id']}")
     assert res.status_code == 200
-    assert "soft-deleted" in res.json()["message"].lower()
+    body = res.json()
 
+    # Backend contract: returns soft_deleted=True and a message that mentions
+    # "deleted" (either "soft-deleted" or "moved to Deleted tab instead")
+    assert body.get("soft_deleted") is True
+    assert "deleted" in body["message"].lower()
+
+    # Still visible when include_deleted=true
     res2 = owner_client.get("/products/?include_deleted=true")
     assert any(p["id"] == sample_product["id"] for p in res2.json())
 
@@ -612,3 +619,394 @@ def test_restock_prediction_returns_structure(owner_client):
     assert "days_until_restock" in data
     assert "confidence" in data
     assert "method" in data
+
+
+# ─── SOFT DELETE TESTS (Batch A) ─────────────────────────────────
+
+
+def test_soft_delete_sets_flag_and_hides_from_default_list(owner_client):
+    """PUT /products/soft-delete/{id} moves product to Deleted tab."""
+    res = _create_product(owner_client, name="Soft Target", stock_qty=5)
+    product_id = res.json()["id"]
+
+    sd = owner_client.put(f"/products/soft-delete/{product_id}")
+    assert sd.status_code == 200
+    assert "deleted" in sd.json()["message"].lower()
+
+    # Not in default list
+    default_list = owner_client.get("/products/").json()
+    assert not any(p["id"] == product_id for p in default_list)
+
+    # Present when include_deleted=true, and flagged
+    with_deleted = owner_client.get("/products/?include_deleted=true").json()
+    target = next(p for p in with_deleted if p["id"] == product_id)
+    assert target["is_deleted"] is True
+
+
+def test_soft_delete_works_even_with_no_sales(owner_client):
+    """The whole point of soft delete: recoverable without needing a sale."""
+    res = _create_product(owner_client, name="Never Sold", stock_qty=3)
+    product_id = res.json()["id"]
+
+    sd = owner_client.put(f"/products/soft-delete/{product_id}")
+    assert sd.status_code == 200
+
+    # Restore brings it back
+    r = owner_client.put(f"/products/restore/{product_id}")
+    assert r.status_code == 200
+
+    default_list = owner_client.get("/products/").json()
+    assert any(p["id"] == product_id for p in default_list)
+
+
+def test_soft_delete_is_idempotent(owner_client):
+    res = _create_product(owner_client, name="Idem", stock_qty=1)
+    product_id = res.json()["id"]
+
+    owner_client.put(f"/products/soft-delete/{product_id}")
+    again = owner_client.put(f"/products/soft-delete/{product_id}")
+    assert again.status_code == 200
+    assert "already" in again.json()["message"].lower()
+
+
+def test_cashier_cannot_soft_delete(cashier_client, sample_product):
+    """Soft delete is owner-only."""
+    res = cashier_client.put(f"/products/soft-delete/{sample_product['id']}")
+    assert res.status_code == 403
+
+
+def test_permanent_delete_refuses_if_sold(owner_client, sample_product):
+    """DELETE on a product with sale history → soft-deletes, flags soft_deleted=True."""
+    _make_sale(owner_client, sample_product["id"], 1)
+
+    res = owner_client.delete(f"/products/{sample_product['id']}")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["soft_deleted"] is True
+    assert "sales" in body["message"].lower() or "history" in body["message"].lower()
+    # ─── TIER 3.1: BATCH RESTOCK ─────────────────────────────────────
+
+
+def test_batch_restock_happy_path(owner_client):
+    a = _create_product(owner_client, name="Batch A", stock_qty=5).json()
+    b = _create_product(owner_client, name="Batch B", stock_qty=10).json()
+
+    res = owner_client.post(
+        "/products/batch-restock",
+        json={
+            "items": [
+                {"product_id": a["id"], "quantity": 20, "cost_per_unit": 800, "notes": "From ABC"},
+                {"product_id": b["id"], "quantity": 15},
+            ]
+        },
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert len(body["items"]) == 2
+
+    # Verify stock updated
+    a_after = owner_client.get(f"/products/{a['id']}").json()
+    b_after = owner_client.get(f"/products/{b['id']}").json()
+    assert a_after["stock_qty"] == 25
+    assert b_after["stock_qty"] == 25
+
+
+def test_batch_restock_atomic_on_invalid_id(owner_client):
+    """Any bad product_id rolls back the whole batch."""
+    a = _create_product(owner_client, name="Valid P", stock_qty=5).json()
+
+    res = owner_client.post(
+        "/products/batch-restock",
+        json={
+            "items": [
+                {"product_id": a["id"], "quantity": 10},
+                {"product_id": "nonexistent-xyz", "quantity": 5},
+            ]
+        },
+    )
+    assert res.status_code == 400
+    # Stock unchanged
+    a_after = owner_client.get(f"/products/{a['id']}").json()
+    assert a_after["stock_qty"] == 5
+
+
+def test_batch_restock_rejects_negative_quantity(owner_client):
+    a = _create_product(owner_client, name="Neg", stock_qty=5).json()
+
+    res = owner_client.post(
+        "/products/batch-restock",
+        json={"items": [{"product_id": a["id"], "quantity": -5}]},
+    )
+    assert res.status_code == 422  # pydantic gt=0
+
+
+def test_batch_restock_shop_scoped(owner_client, app_client):
+    a = _create_product(owner_client, name="Shop A Prod", stock_qty=5).json()
+
+    app_client.post(
+        "/auth/register",
+        json={
+            "shop_name": "Shop B",
+            "full_name": "Owner B",
+            "email": "owner-b-batch@test.com",
+            "password": "test1234",
+        },
+    )
+    token_b = app_client.post(
+        "/auth/login",
+        data={"username": "owner-b-batch@test.com", "password": "test1234"},
+    ).json()["access_token"]
+
+    res = app_client.post(
+        "/products/batch-restock",
+        json={"items": [{"product_id": a["id"], "quantity": 10}]},
+        headers={"Authorization": f"Bearer {token_b}"},
+    )
+    assert res.status_code == 400
+
+
+# ─── TIER 3.2: CATEGORIES ────────────────────────────────────────
+
+
+def test_list_categories_returns_distinct(owner_client):
+    _create_product(owner_client, name="A", category="Food")
+    _create_product(owner_client, name="B", category="Food")
+    _create_product(owner_client, name="C", category="Cleaning")
+
+    res = owner_client.get("/products/categories")
+    assert res.status_code == 200
+    data = res.json()
+    assert isinstance(data, list)
+    names = {c["name"]: c["count"] for c in data}
+    assert names.get("Food") == 2
+    assert names.get("Cleaning") == 1
+
+
+def test_list_categories_shop_scoped(owner_client, app_client):
+    _create_product(owner_client, name="A", category="Shop A Cat")
+
+    app_client.post(
+        "/auth/register",
+        json={
+            "shop_name": "Shop B",
+            "full_name": "Owner B",
+            "email": "owner-b-cats@test.com",
+            "password": "test1234",
+        },
+    )
+    token_b = app_client.post(
+        "/auth/login",
+        data={"username": "owner-b-cats@test.com", "password": "test1234"},
+    ).json()["access_token"]
+
+    res = app_client.get(
+        "/products/categories",
+        headers={"Authorization": f"Bearer {token_b}"},
+    )
+    assert res.status_code == 200
+    assert res.json() == []
+    
+ # ─── TIER 3.3: /products/bulk (Variant Wizard) ───────────────────
+
+
+def test_bulk_create_standalone(owner_client):
+    res = owner_client.post(
+        "/products/bulk",
+        json={
+            "name": "Standalone Item",
+            "category": "Food",
+            "unit": "piece",
+            "has_variants": False,
+            "selling_price": 1000,
+            "purchase_price": 600,
+            "stock_qty": 25,
+        },
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["variant_count"] == 0
+    assert data["parent"]["name"] == "Standalone Item"
+    assert data["parent"]["selling_price"] == 1000
+    assert data["parent"]["stock_qty"] == 25
+
+
+def test_bulk_create_parent_with_variants(owner_client):
+    res = owner_client.post(
+        "/products/bulk",
+        json={
+            "name": "Sugar",
+            "category": "Food",
+            "unit": "kg",
+            "has_variants": True,
+            "variants": [
+                {"name": "1kg", "selling_price": 1500, "purchase_price": 1000, "stock_qty": 20},
+                {"name": "2kg", "selling_price": 2800, "purchase_price": 1800, "stock_qty": 10},
+                {"name": "5kg", "selling_price": 6500, "purchase_price": 4500, "stock_qty": 5},
+            ],
+        },
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["variant_count"] == 3
+    assert data["parent"]["name"] == "Sugar"
+    assert data["parent"]["selling_price"] == 0
+    assert data["parent"]["stock_qty"] == 0
+    names = {v["name"] for v in data["variants"]}
+    assert names == {"1kg", "2kg", "5kg"}
+
+    # Parent should now report variant_count = 3
+    parent_id = data["parent"]["id"]
+    parent_res = owner_client.get(f"/products/{parent_id}")
+    assert parent_res.json()["variant_count"] == 3
+    assert parent_res.json()["is_parent"] is True
+
+
+def test_bulk_create_rejects_empty_variants_list(owner_client):
+    res = owner_client.post(
+        "/products/bulk",
+        json={
+            "name": "Empty",
+            "has_variants": True,
+            "variants": [],
+        },
+    )
+    assert res.status_code == 400
+
+
+def test_bulk_create_rejects_duplicate_variant_names(owner_client):
+    res = owner_client.post(
+        "/products/bulk",
+        json={
+            "name": "Dupe",
+            "has_variants": True,
+            "variants": [
+                {"name": "A", "selling_price": 100},
+                {"name": "A", "selling_price": 200},
+            ],
+        },
+    )
+    assert res.status_code == 400
+    assert "duplicate" in res.json()["detail"].lower()
+
+
+def test_bulk_create_standalone_requires_price(owner_client):
+    res = owner_client.post(
+        "/products/bulk",
+        json={
+            "name": "Free",
+            "has_variants": False,
+            "selling_price": 0,
+        },
+    )
+    assert res.status_code == 400
+
+
+# ─── TIER 4.2: Bulk actions ──────────────────────────────────────
+
+
+def test_bulk_archive(owner_client):
+    a = _create_product(owner_client, name="BA1", stock_qty=5).json()
+    b = _create_product(owner_client, name="BA2", stock_qty=5).json()
+
+    res = owner_client.post(
+        "/products/bulk-archive",
+        json={"product_ids": [a["id"], b["id"]]},
+    )
+    assert res.status_code == 200
+    assert res.json()["affected"] == 2
+
+    a2 = owner_client.get(f"/products/{a['id']}").json()
+    b2 = owner_client.get(f"/products/{b['id']}").json()
+    assert a2["archived"] is True
+    assert b2["archived"] is True
+
+
+def test_bulk_soft_delete_and_restore(owner_client):
+    a = _create_product(owner_client, name="BSD1", stock_qty=5).json()
+    b = _create_product(owner_client, name="BSD2", stock_qty=5).json()
+
+    sd = owner_client.post(
+        "/products/bulk-soft-delete",
+        json={"product_ids": [a["id"], b["id"]]},
+    )
+    assert sd.status_code == 200
+    assert sd.json()["affected"] == 2
+
+    # Not in default list
+    default = owner_client.get("/products/").json()
+    assert not any(p["id"] in (a["id"], b["id"]) for p in default)
+
+    # Restore
+    r = owner_client.post(
+        "/products/bulk-restore",
+        json={"product_ids": [a["id"], b["id"]]},
+    )
+    assert r.status_code == 200
+    assert r.json()["affected"] == 2
+
+    default = owner_client.get("/products/").json()
+    assert any(p["id"] == a["id"] for p in default)
+
+
+def test_bulk_actions_reject_missing_id(owner_client):
+    a = _create_product(owner_client, name="BadRef", stock_qty=5).json()
+
+    res = owner_client.post(
+        "/products/bulk-archive",
+        json={"product_ids": [a["id"], "nonexistent-xyz"]},
+    )
+    assert res.status_code == 400
+
+
+def test_bulk_restock(owner_client):
+    a = _create_product(owner_client, name="BR1", stock_qty=5).json()
+    b = _create_product(owner_client, name="BR2", stock_qty=5).json()
+
+    res = owner_client.post(
+        "/products/bulk-restock",
+        json={
+            "items": [
+                {"product_id": a["id"], "quantity": 20},
+                {"product_id": b["id"], "quantity": 15},
+            ]
+        },
+    )
+    assert res.status_code == 200
+
+    a2 = owner_client.get(f"/products/{a['id']}").json()
+    b2 = owner_client.get(f"/products/{b['id']}").json()
+    assert a2["stock_qty"] == 25
+    assert b2["stock_qty"] == 20
+
+
+def test_bulk_actions_shop_scoped(owner_client, app_client):
+    a = _create_product(owner_client, name="ShopAProd", stock_qty=5).json()
+
+    app_client.post(
+        "/auth/register",
+        json={
+            "shop_name": "Shop B",
+            "full_name": "Owner B",
+            "email": "owner-b-bulk@test.com",
+            "password": "test1234",
+        },
+    )
+    token_b = app_client.post(
+        "/auth/login",
+        data={"username": "owner-b-bulk@test.com", "password": "test1234"},
+    ).json()["access_token"]
+
+    res = app_client.post(
+        "/products/bulk-archive",
+        json={"product_ids": [a["id"]]},
+        headers={"Authorization": f"Bearer {token_b}"},
+    )
+    assert res.status_code == 400
+
+
+def test_cashier_cannot_bulk_soft_delete(cashier_client, sample_product):
+    res = cashier_client.post(
+        "/products/bulk-soft-delete",
+        json={"product_ids": [sample_product["id"]]},
+    )
+    assert res.status_code == 403
