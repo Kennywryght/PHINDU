@@ -115,16 +115,13 @@
 </div>
 
 <style>
-  :global(html),
-  :global(body) {
-    height: 100%;
-    margin: 0;
-    overflow: hidden;
-  }
+  /* NOTE: no :global(html)/:global(body) rules here — those used to kill
+     scrolling on every page of the app. The auth screen is pinned to the
+     viewport via position:fixed on .auth-container instead. */
 
   .auth-container {
-    min-height: 100dvh;
-    width: 100%;
+    position: fixed;
+    inset: 0;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -354,6 +351,7 @@
     }
   }
 
+  /* Very short viewports: hide subtitle/footer to keep everything on-screen */
   @media (max-height: 560px) {
     .subtitle {
       display: none;
