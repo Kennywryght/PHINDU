@@ -1,4 +1,5 @@
-"""Dashboard routes: summary + today + health score + focus + cash flow + deltas + sparklines."""
+"""Dashboard routes: summary + today + health score + focus + cash flow + deltas + sparklines
++ alerts + top customers + debt ageing + slow movers + heatmap."""
 
 from datetime import datetime, timedelta
 
@@ -747,3 +748,361 @@ def get_top_products_trend(
         })
 
     return {"window_days": days, "products": results}
+
+
+# ─── NEW: GET /alerts ────────────────────────────────────────────
+
+
+@router.get("/alerts")
+def get_alerts(
+    db: Session = Depends(get_db),
+    shop_id: str = Depends(get_current_shop_id),
+):
+    """
+    Aggregated alert chips for the dashboard top strip.
+
+    Each chip: { id, severity ('high'|'medium'|'low'|'info'),
+                title, detail, link, cta }
+    """
+    now = datetime.utcnow()
+    alerts: list[dict] = []
+
+    # 1. No open session?
+    active_session = (
+        db.query(SessionModel)
+        .filter(SessionModel.is_active == True, SessionModel.shop_id == shop_id)
+        .first()
+    )
+    if not active_session:
+        alerts.append({
+            "id": "no_session",
+            "severity": "info",
+            "title": "No session open",
+            "detail": "Sales won't be tracked until you open a session.",
+            "link": "/sessions",
+            "cta": "Open session",
+        })
+
+    # 2. Low stock
+    low_stock_count = _low_stock_count(db, shop_id)
+    if low_stock_count > 0:
+        alerts.append({
+            "id": "low_stock",
+            "severity": "high" if low_stock_count >= 5 else "medium",
+            "title": f"{low_stock_count} product{'s' if low_stock_count != 1 else ''} low on stock",
+            "detail": "Restock to avoid losing sales.",
+            "link": "/products?filter=low_stock",
+            "cta": "View",
+        })
+
+    # 3. Zero-stock products that sold recently (critical)
+    cutoff_30d = now - timedelta(days=30)
+    sold_recently = (
+        db.query(SaleItem.product_id)
+        .join(Sale, Sale.id == SaleItem.sale_id)
+        .filter(Sale.shop_id == shop_id, Sale.created_at >= cutoff_30d)
+        .distinct()
+        .subquery()
+    )
+    zero_stock_sold = (
+        _leaf_products_query(db, shop_id)
+        .filter(Product.stock_qty <= 0, Product.id.in_(sold_recently))
+        .count()
+    )
+    if zero_stock_sold > 0:
+        alerts.append({
+            "id": "zero_stock",
+            "severity": "high",
+            "title": f"{zero_stock_sold} fast-mover{'s' if zero_stock_sold != 1 else ''} out of stock",
+            "detail": "These products sold in the last 30 days but have 0 stock.",
+            "link": "/products?filter=out_of_stock",
+            "cta": "Restock",
+        })
+
+    # 4. Overdue debtors (14+ days no payment)
+    cutoff_14d = now - timedelta(days=14)
+    debtors = (
+        db.query(Customer)
+        .filter(Customer.shop_id == shop_id, Customer.total_credit > 0)
+        .all()
+    )
+    overdue_count = 0
+    overdue_total = 0.0
+    for c in debtors:
+        last_payment = (
+            db.query(func.max(Payment.created_at))
+            .filter(Payment.customer_id == c.id, Payment.shop_id == shop_id)
+            .scalar()
+        )
+        if last_payment is None or last_payment < cutoff_14d:
+            overdue_count += 1
+            overdue_total += float(c.total_credit or 0)
+    if overdue_count > 0:
+        alerts.append({
+            "id": "overdue_debt",
+            "severity": "high" if overdue_count >= 3 else "medium",
+            "title": f"{overdue_count} debtor{'s' if overdue_count != 1 else ''} overdue 14+ days",
+            "detail": f"MWK {overdue_total:,.0f} outstanding.",
+            "link": "/credit",
+            "cta": "Follow up",
+        })
+
+    # 5. Revenue down vs last week
+    cur_start = now - timedelta(days=7)
+    prev_start = now - timedelta(days=14)
+    cur = _revenue_and_profit_for_window(db, shop_id, cur_start, now)
+    prev = _revenue_and_profit_for_window(db, shop_id, prev_start, cur_start)
+    if prev["revenue"] > 0:
+        pct = (cur["revenue"] - prev["revenue"]) / prev["revenue"] * 100
+        if pct <= -15:
+            alerts.append({
+                "id": "revenue_down",
+                "severity": "medium",
+                "title": f"Revenue down {abs(pct):.0f}% vs last week",
+                "detail": f"MWK {cur['revenue']:,.0f} this week vs MWK {prev['revenue']:,.0f} last week.",
+                "link": "/insights",
+                "cta": "Investigate",
+            })
+
+    if not alerts:
+        alerts.append({
+            "id": "all_good",
+            "severity": "low",
+            "title": "Everything looks good",
+            "detail": "No urgent issues detected.",
+            "link": None,
+            "cta": None,
+        })
+
+    return {"generated_at": now.isoformat(), "alerts": alerts}
+
+
+# ─── NEW: GET /top-customers ────────────────────────────────────
+
+
+@router.get("/top-customers")
+def get_top_customers(
+    days: int = Query(7, ge=1, le=90),
+    limit: int = Query(5, ge=1, le=20),
+    db: Session = Depends(get_db),
+    shop_id: str = Depends(get_current_shop_id),
+):
+    """
+    Top customers by revenue in the given window.
+
+    Returns: [{ id, name, phone, revenue, purchase_count, credit_outstanding }]
+    """
+    now = datetime.utcnow()
+    start = now - timedelta(days=days)
+
+    rows = (
+        db.query(
+            Customer.id,
+            Customer.name,
+            Customer.phone,
+            Customer.total_credit,
+            func.coalesce(func.sum(Sale.total_amount), 0).label("revenue"),
+            func.count(Sale.id).label("purchase_count"),
+        )
+        .join(Sale, Sale.customer_id == Customer.id)
+        .filter(
+            Customer.shop_id == shop_id,
+            Sale.shop_id == shop_id,
+            Sale.created_at >= start,
+            Sale.created_at <= now,
+            Sale.is_voided == False,
+        )
+        .group_by(Customer.id, Customer.name, Customer.phone, Customer.total_credit)
+        .order_by(func.sum(Sale.total_amount).desc())
+        .limit(limit)
+        .all()
+    )
+
+    return {
+        "window_days": days,
+        "customers": [
+            {
+                "id": r.id,
+                "name": r.name,
+                "phone": r.phone,
+                "revenue": round(float(r.revenue or 0), 2),
+                "purchase_count": int(r.purchase_count or 0),
+                "credit_outstanding": round(float(r.total_credit or 0), 2),
+            }
+            for r in rows
+        ],
+    }
+
+
+# ─── NEW: GET /debt-ageing ──────────────────────────────────────
+
+
+@router.get("/debt-ageing")
+def get_debt_ageing(
+    db: Session = Depends(get_db),
+    shop_id: str = Depends(get_current_shop_id),
+):
+    """
+    Bucket outstanding customer credit by age of the oldest unpaid sale.
+
+    A customer's whole `total_credit` is bucketed by the age of the oldest
+    unpaid/partial sale they have.
+
+    Buckets: current (<7d), 7-14d, 15-30d, over 30d.
+    """
+    now = datetime.utcnow()
+
+    customers = (
+        db.query(Customer)
+        .filter(Customer.shop_id == shop_id, Customer.total_credit > 0)
+        .all()
+    )
+
+    buckets = {
+        "current": {"count": 0, "total": 0.0},
+        "days_7_14": {"count": 0, "total": 0.0},
+        "days_15_30": {"count": 0, "total": 0.0},
+        "over_30": {"count": 0, "total": 0.0},
+    }
+
+    for c in customers:
+        oldest = (
+            db.query(func.min(Sale.created_at))
+            .filter(
+                Sale.customer_id == c.id,
+                Sale.shop_id == shop_id,
+                Sale.payment_status.in_(["unpaid", "partial"]),
+                Sale.is_voided == False,
+            )
+            .scalar()
+        )
+        if not oldest:
+            bucket = "current"
+        else:
+            age_days = (now - oldest).days
+            if age_days < 7:
+                bucket = "current"
+            elif age_days < 15:
+                bucket = "days_7_14"
+            elif age_days < 31:
+                bucket = "days_15_30"
+            else:
+                bucket = "over_30"
+
+        buckets[bucket]["count"] += 1
+        buckets[bucket]["total"] += float(c.total_credit or 0)
+
+    for k in buckets:
+        buckets[k]["total"] = round(buckets[k]["total"], 2)
+
+    total = round(sum(b["total"] for b in buckets.values()), 2)
+    return {"generated_at": now.isoformat(), "total": total, "buckets": buckets}
+
+
+# ─── NEW: GET /slow-movers ──────────────────────────────────────
+
+
+@router.get("/slow-movers")
+def get_slow_movers(
+    days: int = Query(30, ge=7, le=180),
+    limit: int = Query(5, ge=1, le=20),
+    db: Session = Depends(get_db),
+    shop_id: str = Depends(get_current_shop_id),
+):
+    """
+    Products with stock on hand but very few / zero sales in the window.
+
+    Ranked by (stock_qty × purchase_price) descending — i.e. how much
+    cash is sitting idle.
+    """
+    now = datetime.utcnow()
+    start = now - timedelta(days=days)
+
+    sold_map = {
+        row.product_id: float(row.sold or 0)
+        for row in (
+            db.query(
+                SaleItem.product_id,
+                func.sum(SaleItem.quantity).label("sold"),
+            )
+            .join(Sale, Sale.id == SaleItem.sale_id)
+            .filter(
+                Sale.shop_id == shop_id,
+                Sale.created_at >= start,
+                Sale.is_voided == False,
+            )
+            .group_by(SaleItem.product_id)
+            .all()
+        )
+    }
+
+    candidates = (
+        _leaf_products_query(db, shop_id)
+        .filter(Product.stock_qty > 0)
+        .all()
+    )
+
+    rows = []
+    for p in candidates:
+        sold = sold_map.get(p.id, 0.0)
+        if sold > 2:
+            continue
+        idle_value = float(p.stock_qty or 0) * float(p.purchase_price or 0)
+        rows.append({
+            "id": p.id,
+            "name": p.name,
+            "category": p.category,
+            "stock_qty": float(p.stock_qty or 0),
+            "unit": p.unit,
+            "sold": sold,
+            "idle_value": round(idle_value, 2),
+        })
+
+    rows.sort(key=lambda r: r["idle_value"], reverse=True)
+    return {"window_days": days, "products": rows[:limit]}
+
+
+# ─── NEW: GET /heatmap ──────────────────────────────────────────
+
+
+@router.get("/heatmap")
+def get_heatmap(
+    days: int = Query(30, ge=7, le=180),
+    db: Session = Depends(get_db),
+    shop_id: str = Depends(get_current_shop_id),
+):
+    """
+    7×24 grid of sale counts by (weekday, hour).
+
+    Weekday 0 = Monday, 6 = Sunday.
+    Returns grid[row][col] where row is weekday (0..6), col is hour (0..23).
+    """
+    now = datetime.utcnow()
+    start = now - timedelta(days=days)
+
+    sales = (
+        db.query(Sale.created_at)
+        .filter(
+            Sale.shop_id == shop_id,
+            Sale.created_at >= start,
+            Sale.created_at <= now,
+            Sale.is_voided == False,
+        )
+        .all()
+    )
+
+    grid = [[0] * 24 for _ in range(7)]
+    for (created_at,) in sales:
+        if not created_at:
+            continue
+        weekday = created_at.weekday()  # Monday=0
+        hour = created_at.hour
+        grid[weekday][hour] += 1
+
+    max_val = max((max(row) for row in grid), default=0)
+    return {
+        "window_days": days,
+        "grid": grid,
+        "max": max_val,
+        "weekday_labels": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+    }

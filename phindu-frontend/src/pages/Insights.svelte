@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import {
     BarChart3,
     Trophy,
@@ -15,27 +15,58 @@
     RefreshCw,
     ChevronLeft,
     ChevronRight,
-    ArrowUpRight,
-    ArrowDownRight,
+    ChevronDown,
     Sparkles,
     Tags,
     Layers,
+    AlertTriangle,
+    Loader2,
+    ShoppingBasket,
+    ArrowRight,
+    Info,
   } from "lucide-svelte";
   import Layout from "../components/Layout.svelte";
   import API from "../api/api";
   import ExpenseDrilldownModal from "../components/ExpenseDrilldownModal.svelte";
+  import Delta from "../components/Delta.svelte";
   import * as XLSX from "xlsx";
 
+  // ── State ──
   let period = "day";
   let loading = true;
   let error = null;
   let summary = null;
+
+  let priceChangeRange = "30";
+  let priceChanges = [];
+  let priceChangesLoading = false;
+
+  let marketBasket = null;
+  let marketBasketLoading = false;
+  let marketBasketError = null;
+  let mbPeriod = "month";
+  let mbMinSupport = 3;
 
   const PAGE_SIZE = 10;
   let marginPage = 0;
   let expensePage = 0;
   let drilldownCategory = null;
 
+  // section expand/collapse
+  let openSections = {
+    marketBasket: true,
+    price: true,
+    top: true,
+    category: true,
+    margins: false,
+    peak: true,
+    expenses: true,
+  };
+  function toggle(section) {
+    openSections = { ...openSections, [section]: !openSections[section] };
+  }
+
+  // ── Fetchers ──
   async function fetchSummary() {
     loading = true;
     error = null;
@@ -52,9 +83,113 @@
     }
   }
 
-  onMount(fetchSummary);
-  $: period, fetchSummary();
+  function normalizePriceChanges(raw) {
+    if (Array.isArray(raw?.recent_price_changes_v2)) {
+      return raw.recent_price_changes_v2;
+    }
+    if (Array.isArray(raw?.recent_price_changes)) {
+      return raw.recent_price_changes.map((entry) => {
+        const costCh = entry.changes.find((c) => c.price_type === "purchase") || null;
+        const sellCh = entry.changes.find((c) => c.price_type === "selling") || null;
+        return {
+          product: entry.product,
+          last_cost_change: costCh,
+          last_sell_change: sellCh,
+          changes: entry.changes,
+        };
+      });
+    }
+    return [];
+  }
 
+  async function fetchPriceChanges() {
+    priceChangesLoading = true;
+    try {
+      let items;
+      try {
+        const params = {};
+        if (priceChangeRange !== "all") params.days = Number(priceChangeRange);
+        const res = await API.get("/analytics/price-changes", { params });
+        items = res.data || [];
+      } catch (e) {
+        if (summary) {
+          items = normalizePriceChanges(summary);
+        } else {
+          const res = await API.get(`/analytics/summary?period=${period}`);
+          items = normalizePriceChanges(res.data);
+        }
+      }
+
+      if (priceChangeRange !== "all") {
+        const cutoff =
+          Date.now() - Number(priceChangeRange) * 24 * 60 * 60 * 1000;
+        items = items.filter((entry) => {
+          const ts =
+            entry.last_cost_change?.changed_at ||
+            entry.last_sell_change?.changed_at ||
+            entry.changes?.[0]?.changed_at;
+          return ts ? new Date(ts).getTime() >= cutoff : true;
+        });
+      }
+      priceChanges = items;
+    } catch (e) {
+      console.error("Price changes fetch failed:", e);
+      priceChanges = [];
+    } finally {
+      priceChangesLoading = false;
+    }
+  }
+
+  async function fetchMarketBasket() {
+    marketBasketLoading = true;
+    marketBasketError = null;
+    try {
+      const res = await API.get("/analytics/market-basket", {
+        params: { period: mbPeriod, min_support: mbMinSupport, limit: 15 },
+      });
+      marketBasket = res.data;
+    } catch (e) {
+      if (summary?.market_basket) {
+        marketBasket = summary.market_basket;
+      } else {
+        marketBasketError = "Could not load market basket analysis";
+        marketBasket = null;
+      }
+    } finally {
+      marketBasketLoading = false;
+    }
+  }
+
+  async function refreshAll() {
+    await Promise.all([fetchSummary(), fetchPriceChanges(), fetchMarketBasket()]);
+  }
+
+  // ── Lifecycle: initial + focus + poll ──
+  let pollId = null;
+  function handleVisibility() {
+    if (document.visibilityState === "visible") refreshAll();
+  }
+  onMount(() => {
+    refreshAll();
+    document.addEventListener("visibilitychange", handleVisibility);
+    pollId = setInterval(() => {
+      if (document.visibilityState === "visible") {
+        fetchPriceChanges();
+        fetchMarketBasket();
+      }
+    }, 60000);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+      if (pollId) clearInterval(pollId);
+    };
+  });
+  onDestroy(() => {
+    if (pollId) clearInterval(pollId);
+  });
+
+  $: if (period) fetchSummary();
+
+  // ── Exports ──
   async function exportSales() {
     const res = await API.get("/sales/?limit=200");
     const raw = res.data;
@@ -86,6 +221,7 @@
     XLSX.writeFile(wb, `phindu_products_${new Date().toISOString().split("T")[0]}.xlsx`);
   }
 
+  // ── Helpers ──
   function formatDate(iso) {
     if (!iso) return "—";
     return new Date(iso).toLocaleDateString(undefined, {
@@ -93,42 +229,28 @@
       day: "numeric",
     });
   }
-
   function fmt(n) {
     return Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 0 });
   }
-
   function openDrilldown(category) {
-    drilldownCategory = category;
+    drilldownCategory = category || "Uncategorized";
   }
   function closeDrilldown() {
     drilldownCategory = null;
   }
 
+  // ── Derived ──
   $: maxPeak =
     summary?.peak_hours?.length > 0 ? Math.max(...summary.peak_hours, 1) : 1;
-
-  $: priceChanges = (() => {
-    if (!summary) return [];
-    if (Array.isArray(summary.recent_price_changes_v2)) {
-      return summary.recent_price_changes_v2;
-    }
-    return (summary.recent_price_changes || []).map((entry) => {
-      const costCh = entry.changes.find((c) => c.price_type === "purchase") || null;
-      const sellCh = entry.changes.find((c) => c.price_type === "selling") || null;
-      return {
-        product: entry.product,
-        last_cost_change: costCh,
-        last_sell_change: sellCh,
-        changes: entry.changes,
-      };
-    });
-  })();
 
   $: bestWorst = (() => {
     const margins = summary?.profit_margins || [];
     if (margins.length === 0) return null;
-    return { best: margins[0], worst: margins[margins.length - 1], count: margins.length };
+    return {
+      best: margins[0],
+      worst: margins[margins.length - 1],
+      count: margins.length,
+    };
   })();
 
   $: margins = summary?.profit_margins || [];
@@ -139,22 +261,18 @@
   $: expensePageCount = Math.max(1, Math.ceil(expenses.length / PAGE_SIZE));
   $: pagedExpenses = expenses.slice(expensePage * PAGE_SIZE, (expensePage + 1) * PAGE_SIZE);
 
-  // NEW: category performance + top-5 detailed
   $: categoryPerf = summary?.category_performance || [];
   $: topDetailed = summary?.top_products_detailed || [];
+  $: lowStock = summary?.low_stock || [];
 
-  function prevMargin() {
-    if (marginPage > 0) marginPage -= 1;
-  }
-  function nextMargin() {
-    if (marginPage < marginPageCount - 1) marginPage += 1;
-  }
-  function prevExpense() {
-    if (expensePage > 0) expensePage -= 1;
-  }
-  function nextExpense() {
-    if (expensePage < expensePageCount - 1) expensePage += 1;
-  }
+  $: netWeek =
+    (summary?.week_glance?.revenue?.current || 0) -
+    (summary?.week_expenses || 0);
+
+  function prevMargin() { if (marginPage > 0) marginPage -= 1; }
+  function nextMargin() { if (marginPage < marginPageCount - 1) marginPage += 1; }
+  function prevExpense() { if (expensePage > 0) expensePage -= 1; }
+  function nextExpense() { if (expensePage < expensePageCount - 1) expensePage += 1; }
 </script>
 
 <Layout title="Insights">
@@ -164,406 +282,605 @@
         <BarChart3 size={22} strokeWidth={2} />
         Business Insights
       </h2>
-      {#if summary}
-        <p class="timestamp">
-          Updated {new Date(summary.generated_at).toLocaleTimeString()}
-        </p>
-      {/if}
+      <div class="header-actions">
+        {#if summary}
+          <span class="timestamp">
+            Updated {new Date(summary.generated_at).toLocaleTimeString()}
+          </span>
+        {/if}
+        <button class="icon-btn" on:click={refreshAll} title="Refresh" type="button">
+          <RefreshCw size={16} class:spin={loading} />
+        </button>
+      </div>
     </div>
 
-    {#if loading}
+    {#if loading && !summary}
       <div class="state-box">
         <div class="spinner"></div>
         <p>Loading insights...</p>
       </div>
-    {:else if error}
+    {:else if error && !summary}
       <div class="state-box error">
         <p>{error}</p>
-        <button class="btn btn-primary" on:click={fetchSummary} type="button">
+        <button class="btn btn-primary" on:click={refreshAll} type="button">
           <RefreshCw size={16} strokeWidth={2} /> Retry
         </button>
       </div>
     {:else if summary}
-      <!-- ── Week at a glance ── -->
+      <!-- ── KPI strip ── -->
       {#if summary.week_glance}
         {@const wg = summary.week_glance}
-        <div class="glance-card">
-          <div class="glance-header">
-            <Sparkles size={16} strokeWidth={2} />
-            <span>This week at a glance</span>
+        <div class="kpi-strip">
+          <div class="kpi">
+            <span class="kpi-label">Revenue (7d)</span>
+            <strong class="kpi-value">MWK {fmt(wg.revenue.current)}</strong>
+            <Delta pct={wg.revenue.percent} />
           </div>
-          <div class="glance-grid">
-            <div class="glance-cell">
-              <span class="gl-label">Revenue</span>
-              <strong class="gl-value">MWK {fmt(wg.revenue.current)}</strong>
-              {#if wg.revenue.percent !== null}
-                <span class="gl-delta" class:up={wg.revenue.percent > 0} class:down={wg.revenue.percent < 0}>
-                  {#if wg.revenue.percent > 0}<ArrowUpRight size={12} /> +{wg.revenue.percent}%
-                  {:else if wg.revenue.percent < 0}<ArrowDownRight size={12} /> {wg.revenue.percent}%
-                  {:else}<Minus size={12} /> 0%{/if}
-                  vs last week
-                </span>
-              {/if}
-            </div>
-            <div class="glance-cell">
-              <span class="gl-label">Profit</span>
-              <strong class="gl-value">MWK {fmt(wg.profit.current)}</strong>
-              {#if wg.profit.percent !== null}
-                <span class="gl-delta" class:up={wg.profit.percent > 0} class:down={wg.profit.percent < 0}>
-                  {#if wg.profit.percent > 0}<ArrowUpRight size={12} /> +{wg.profit.percent}%
-                  {:else if wg.profit.percent < 0}<ArrowDownRight size={12} /> {wg.profit.percent}%
-                  {:else}<Minus size={12} /> 0%{/if}
-                  vs last week
-                </span>
-              {/if}
-            </div>
-            <div class="glance-cell">
-              <span class="gl-label">Sales</span>
-              <strong class="gl-value">{wg.sales_count.current}</strong>
-              {#if wg.sales_count.percent !== null}
-                <span class="gl-delta" class:up={wg.sales_count.percent > 0} class:down={wg.sales_count.percent < 0}>
-                  {#if wg.sales_count.percent > 0}<ArrowUpRight size={12} /> +{wg.sales_count.percent}%
-                  {:else if wg.sales_count.percent < 0}<ArrowDownRight size={12} /> {wg.sales_count.percent}%
-                  {:else}<Minus size={12} /> 0%{/if}
-                </span>
-              {/if}
-            </div>
-            <div class="glance-cell">
-              <span class="gl-label">Avg sale</span>
-              <strong class="gl-value">MWK {fmt(wg.avg_sale.current)}</strong>
-              {#if wg.avg_sale.percent !== null}
-                <span class="gl-delta" class:up={wg.avg_sale.percent > 0} class:down={wg.avg_sale.percent < 0}>
-                  {#if wg.avg_sale.percent > 0}<ArrowUpRight size={12} /> +{wg.avg_sale.percent}%
-                  {:else if wg.avg_sale.percent < 0}<ArrowDownRight size={12} /> {wg.avg_sale.percent}%
-                  {:else}<Minus size={12} /> 0%{/if}
-                </span>
-              {/if}
-            </div>
+          <div class="kpi">
+            <span class="kpi-label">Profit (7d)</span>
+            <strong class="kpi-value">MWK {fmt(wg.profit.current)}</strong>
+            <Delta pct={wg.profit.percent} />
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">Sales (7d)</span>
+            <strong class="kpi-value">{wg.sales_count.current}</strong>
+            <Delta pct={wg.sales_count.percent} />
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">Avg sale</span>
+            <strong class="kpi-value">MWK {fmt(wg.avg_sale.current)}</strong>
+            <Delta pct={wg.avg_sale.percent} />
+          </div>
+        </div>
+
+        <div class="cashflow-row">
+          <div class="cf-cell income">
+            <span>Income (7d)</span>
+            <strong>MWK {fmt(wg.revenue.current)}</strong>
+          </div>
+          <div class="cf-cell expense">
+            <span>Expenses (7d)</span>
+            <strong>MWK {fmt(summary.week_expenses ?? 0)}</strong>
+          </div>
+          <div class="cf-cell net">
+            <span>Net</span>
+            <strong class:negative={netWeek < 0}>MWK {fmt(netWeek)}</strong>
           </div>
         </div>
       {/if}
 
+      <!-- ── Low stock ── -->
+      {#if lowStock.length > 0}
+        <div class="card alert-card">
+          <h3><AlertTriangle size={18} strokeWidth={2} /> Low Stock</h3>
+          <ul class="low-stock-list">
+            {#each lowStock as p}
+              <li>
+                <span>{p.name}</span>
+                <strong class="badge">{p.stock_qty} left</strong>
+              </li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
+
+      <!-- ── Period selector ── -->
       <div class="period-selector">
-        <label for="period">Show top products for:</label>
-        <select id="period" bind:value={period}>
-          <option value="day">Today</option>
-          <option value="week">This Week</option>
-          <option value="month">This Month</option>
-        </select>
+        <label for="period">Period:</label>
+        <div class="segmented" role="group">
+          {#each [["day", "Today"], ["week", "This Week"], ["month", "This Month"]] as [val, label]}
+            <button
+              type="button"
+              class:active={period === val}
+              on:click={() => (period = val)}
+            >
+              {label}
+            </button>
+          {/each}
+        </div>
       </div>
 
-      <!-- ── Recent Price Changes ── -->
-      <div class="card">
-        <h3>
-          <Bell size={18} strokeWidth={2} />
-          Recent Price Changes (Last 30 Days)
-        </h3>
-        {#if priceChanges.length === 0}
-          <p class="empty-text">No price changes in the last 30 days.</p>
-        {:else}
-          <div class="price-changes-list">
-            {#each priceChanges as entry}
-              <div class="price-change-item">
-                <div class="product-header">
-                  <strong>{entry.product.name}</strong>
-                  <span class="current-margin">
-                    Current margin:
-                    {entry.product.current_margin_percent != null
-                      ? `${entry.product.current_margin_percent.toFixed(1)}%`
-                      : "—"}
-                  </span>
-                </div>
-                <div class="changes-list">
-                  {#if entry.last_cost_change}
-                    {@const c = entry.last_cost_change}
-                    <div class="change-line">
-                      <span class="change-type purchase">COST</span>
-                      <span class="change-values">
-                        {#if c.old_price === null || c.old_price === 0}
-                          Set to MWK {c.new_price?.toLocaleString()}
-                        {:else}
-                          MWK {c.old_price?.toLocaleString()} →
-                          MWK {c.new_price?.toLocaleString()}
-                        {/if}
-                      </span>
-                      {#if c.change_percent !== null}
-                        {#if c.change_percent > 0}<span class="pct up"><TrendingUp size={11} /> +{c.change_percent}%</span>
-                        {:else if c.change_percent < 0}<span class="pct down"><TrendingDown size={11} /> {c.change_percent}%</span>
-                        {:else}<span class="pct flat"><Minus size={11} /> 0%</span>{/if}
-                      {/if}
-                      <span class="change-date">{formatDate(c.changed_at)}</span>
-                    </div>
-                  {:else}
-                    <div class="change-line muted">
-                      <span class="change-type purchase off">COST</span>
-                      <span class="change-values muted">No change</span>
-                    </div>
-                  {/if}
-
-                  {#if entry.last_sell_change}
-                    {@const s = entry.last_sell_change}
-                    <div class="change-line">
-                      <span class="change-type selling">SELL</span>
-                      <span class="change-values">
-                        {#if s.old_price === null || s.old_price === 0}
-                          Set to MWK {s.new_price?.toLocaleString()}
-                        {:else}
-                          MWK {s.old_price?.toLocaleString()} →
-                          MWK {s.new_price?.toLocaleString()}
-                        {/if}
-                      </span>
-                      {#if s.change_percent !== null}
-                        {#if s.change_percent > 0}<span class="pct up"><TrendingUp size={11} /> +{s.change_percent}%</span>
-                        {:else if s.change_percent < 0}<span class="pct down"><TrendingDown size={11} /> {s.change_percent}%</span>
-                        {:else}<span class="pct flat"><Minus size={11} /> 0%</span>{/if}
-                      {/if}
-                      <span class="change-date">{formatDate(s.changed_at)}</span>
-                    </div>
-                  {:else}
-                    <div class="change-line muted">
-                      <span class="change-type selling off">SELL</span>
-                      <span class="change-values muted">No change</span>
-                    </div>
-                  {/if}
-                </div>
-              </div>
-            {/each}
-          </div>
-        {/if}
-      </div>
-
-      <!-- ── Top Products (NEW: with parent + category) ── -->
-      <div class="card">
-        <h3>
-          <Trophy size={18} strokeWidth={2} />
-          Top 5 Products
-        </h3>
-        {#if topDetailed.length === 0}
-          <p class="empty-text">No sales data for this period.</p>
-        {:else}
-          <div class="top-list">
-            {#each topDetailed as product, i}
-              <div class="top-row">
-                <span class="top-rank">{i + 1}</span>
-                <div class="top-main">
-                  <div class="top-name-line">
-                    <strong>{product.name}</strong>
-                    {#if product.is_variant && product.parent_name}
-                      <span class="parent-tag">
-                        <Layers size={11} strokeWidth={2} /> {product.parent_name}
-                      </span>
-                    {/if}
-                  </div>
-                  <div class="top-meta">
-                    {#if product.category}
-                      <span class="cat-chip">{product.category}</span>
-                    {/if}
-                  </div>
-                </div>
-                <div class="top-qty">
-                  <strong>{product.quantity}</strong>
-                  <span>units</span>
-                </div>
-              </div>
-            {/each}
-          </div>
-        {/if}
-      </div>
-
-      <!-- ── NEW: Category Performance ── -->
-      <div class="card">
-        <h3>
-          <Tags size={18} strokeWidth={2} />
-          Category Performance
-        </h3>
-        {#if categoryPerf.length === 0}
-          <p class="empty-text">No category sales in this period.</p>
-        {:else}
-          <div class="cat-perf-list">
-            {#each categoryPerf as cat}
-              <div class="cp-row">
-                <div class="cp-top">
-                  <strong class="cp-name">{cat.category}</strong>
-                  <span class="cp-rev">MWK {fmt(cat.revenue)}</span>
-                </div>
-                <div class="cp-bar-wrap">
-                  <div
-                    class="cp-bar"
-                    style="width: {Math.min(100, cat.revenue_percent || 0)}%"
-                  ></div>
-                </div>
-                <div class="cp-meta">
-                  <span>{cat.revenue_percent}% of revenue</span>
-                  <span>{cat.quantity} units · {cat.sale_count} sale{cat.sale_count === 1 ? "" : "s"}</span>
-                </div>
-              </div>
-            {/each}
-          </div>
-        {/if}
-      </div>
-
-      <!-- ── Profit Margins ── -->
-      <div class="card">
-        <h3>
-          <PiggyBank size={18} strokeWidth={2} />
-          Profit Margin by Product
-        </h3>
-
-        {#if bestWorst && bestWorst.count > 1}
-          <div class="best-worst-row">
-            <div class="bw-cell best">
-              <span>Best margin</span>
-              <strong>{bestWorst.best.name}</strong>
-              <span class="bw-pct">{bestWorst.best.margin_percent.toFixed(1)}%</span>
-            </div>
-            <div class="bw-cell worst">
-              <span>Worst margin</span>
-              <strong>{bestWorst.worst.name}</strong>
-              <span class="bw-pct">{bestWorst.worst.margin_percent.toFixed(1)}%</span>
-            </div>
-          </div>
-        {/if}
-
-        {#if margins.length === 0}
-          <p class="empty-text">No sales data available.</p>
-        {:else}
-          <div class="table-wrapper margin-table-wrap">
-            <table class="margin-table">
-              <thead>
-                <tr>
-                  <th>Product</th>
-                  <th class="num">Revenue</th>
-                  <th class="num">Cost</th>
-                  <th class="num">Profit</th>
-                  <th class="num">Margin</th>
-                </tr>
-              </thead>
-              <tbody>
-                {#each pagedMargins as item}
-                  <tr>
-                    <td class="name-cell">{item.name}</td>
-                    <td class="num">{fmt(item.revenue)}</td>
-                    <td class="num">{fmt(item.cost)}</td>
-                    <td class="num">{fmt(item.profit)}</td>
-                    <td class="num margin-value">{item.margin_percent}%</td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          </div>
-
-          <div class="margin-cards">
-            {#each pagedMargins as item}
-              <div class="margin-card">
-                <div class="mc-header">
-                  <strong>{item.name}</strong>
-                  <span class="mc-margin">{item.margin_percent}%</span>
-                </div>
-                <div class="mc-row"><span>Revenue</span><span>MWK {fmt(item.revenue)}</span></div>
-                <div class="mc-row"><span>Cost</span><span>MWK {fmt(item.cost)}</span></div>
-                <div class="mc-row"><span>Profit</span><span class="mc-profit">MWK {fmt(item.profit)}</span></div>
-              </div>
-            {/each}
-          </div>
-
-          {#if marginPageCount > 1}
-            <div class="pagination">
-              <button class="page-btn" on:click={prevMargin} disabled={marginPage === 0} type="button" aria-label="Previous">
-                <ChevronLeft size={16} />
-              </button>
-              <span class="page-info">
-                {marginPage * PAGE_SIZE + 1}–{Math.min((marginPage + 1) * PAGE_SIZE, margins.length)}
-                of {margins.length}
-              </span>
-              <button class="page-btn" on:click={nextMargin} disabled={marginPage >= marginPageCount - 1} type="button" aria-label="Next">
-                <ChevronRight size={16} />
-              </button>
-            </div>
-          {/if}
-        {/if}
-      </div>
-
-      <!-- ── Peak Hours ── -->
-      <div class="card">
-        <h3>
-          <Clock size={18} strokeWidth={2} />
-          Busiest Hours
-        </h3>
-        <div class="peak-chart-wrapper">
-          <div class="peak-chart">
-            {#each summary.peak_hours as count, hour}
-              <div class="peak-bar-container">
-                <div class="peak-bar" style="height: {Math.max(3, (count / maxPeak) * 100)}%">
-                  {#if count > 0}<span class="peak-value">{count}</span>{/if}
-                </div>
-                <span class="peak-label">{hour}</span>
-              </div>
-            {/each}
+      <!-- ── Price changes ── -->
+      <section class="card" class:collapsed={!openSections.price}>
+        <div class="card-header">
+          <h3>
+            <Bell size={18} strokeWidth={2} />
+            Price Changes
+          </h3>
+          <div class="card-actions">
+            <select
+              bind:value={priceChangeRange}
+              on:change={fetchPriceChanges}
+              class="small-select"
+            >
+              <option value="7">Last 7 days</option>
+              <option value="30">Last 30 days</option>
+              <option value="90">Last 90 days</option>
+              <option value="all">All time</option>
+            </select>
+            <button
+              class="icon-btn small"
+              on:click={fetchPriceChanges}
+              title="Refresh price changes"
+              type="button"
+            >
+              <RefreshCw size={14} class:spin={priceChangesLoading} />
+            </button>
+            <button
+              class="icon-btn small"
+              on:click={() => toggle("price")}
+              title="Toggle section"
+              type="button"
+            >
+              <ChevronDown size={14} class:rotated={!openSections.price} />
+            </button>
           </div>
         </div>
-        <p class="chart-hint">Bars show sales count per hour (0–23)</p>
-      </div>
 
-      <!-- ── Expense Breakdown ── -->
-      <div class="card">
-        <h3>
-          <Receipt size={18} strokeWidth={2} />
-          Expenses by Category
-        </h3>
-        {#if expenses.length === 0}
-          <p class="empty-text">No expenses recorded.</p>
-        {:else}
-          <div class="table-wrapper">
-            <table>
-              <thead>
-                <tr>
-                  <th>Category</th>
-                  <th class="num">Amount</th>
-                  <th class="action-col"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {#each pagedExpenses as item}
-                  <tr class="clickable-row" on:click={() => openDrilldown(item.category)} on:keydown={(e) => e.key === "Enter" && openDrilldown(item.category)} role="button" tabindex="0">
-                    <td>{item.category}</td>
-                    <td class="num">MWK {item.total?.toFixed(2)}</td>
-                    <td class="action-col"><ChevronRight size={16} strokeWidth={2} class="chev-icon" /></td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          </div>
+        {#if openSections.price}
+          {#if priceChangesLoading}
+            <div class="state-inline">
+              <Loader2 size={16} class="spin" /> Loading…
+            </div>
+          {:else if priceChanges.length === 0}
+            <p class="empty-text">No price changes in this period.</p>
+          {:else}
+            <div class="price-changes-list">
+              {#each priceChanges as entry}
+                <div class="price-change-item">
+                  <div class="product-header">
+                    <strong>{entry.product?.name || "Unknown product"}</strong>
+                    <span class="current-margin">
+                      Current margin:
+                      {entry.product?.current_margin_percent != null
+                        ? `${entry.product.current_margin_percent.toFixed(1)}%`
+                        : "—"}
+                    </span>
+                  </div>
+                  <div class="changes-list">
+                    {#if entry.last_cost_change}
+                      {@const c = entry.last_cost_change}
+                      <div class="change-line">
+                        <span class="change-type purchase">COST</span>
+                        <span class="change-values">
+                          {#if c.old_price === null || c.old_price === 0}
+                            Set to MWK {c.new_price?.toLocaleString()}
+                          {:else}
+                            MWK {c.old_price?.toLocaleString()} →
+                            MWK {c.new_price?.toLocaleString()}
+                          {/if}
+                        </span>
+                        {#if c.change_percent !== null && c.change_percent !== undefined}
+                          {#if c.change_percent > 0}
+                            <span class="pct up"><TrendingUp size={11} /> +{c.change_percent}%</span>
+                          {:else if c.change_percent < 0}
+                            <span class="pct down"><TrendingDown size={11} /> {c.change_percent}%</span>
+                          {:else}
+                            <span class="pct flat"><Minus size={11} /> 0%</span>
+                          {/if}
+                        {/if}
+                        <span class="change-date">{formatDate(c.changed_at)}</span>
+                      </div>
+                    {:else}
+                      <div class="change-line muted">
+                        <span class="change-type purchase off">COST</span>
+                        <span class="change-values muted">No change</span>
+                      </div>
+                    {/if}
 
-          {#if expensePageCount > 1}
-            <div class="pagination">
-              <button class="page-btn" on:click={prevExpense} disabled={expensePage === 0} type="button" aria-label="Previous">
-                <ChevronLeft size={16} />
-              </button>
-              <span class="page-info">
-                {expensePage * PAGE_SIZE + 1}–{Math.min((expensePage + 1) * PAGE_SIZE, expenses.length)}
-                of {expenses.length}
-              </span>
-              <button class="page-btn" on:click={nextExpense} disabled={expensePage >= expensePageCount - 1} type="button" aria-label="Next">
-                <ChevronRight size={16} />
-              </button>
+                    {#if entry.last_sell_change}
+                      {@const s = entry.last_sell_change}
+                      <div class="change-line">
+                        <span class="change-type selling">SELL</span>
+                        <span class="change-values">
+                          {#if s.old_price === null || s.old_price === 0}
+                            Set to MWK {s.new_price?.toLocaleString()}
+                          {:else}
+                            MWK {s.old_price?.toLocaleString()} →
+                            MWK {s.new_price?.toLocaleString()}
+                          {/if}
+                        </span>
+                        {#if s.change_percent !== null && s.change_percent !== undefined}
+                          {#if s.change_percent > 0}
+                            <span class="pct up"><TrendingUp size={11} /> +{s.change_percent}%</span>
+                          {:else if s.change_percent < 0}
+                            <span class="pct down"><TrendingDown size={11} /> {s.change_percent}%</span>
+                          {:else}
+                            <span class="pct flat"><Minus size={11} /> 0%</span>
+                          {/if}
+                        {/if}
+                        <span class="change-date">{formatDate(s.changed_at)}</span>
+                      </div>
+                    {:else}
+                      <div class="change-line muted">
+                        <span class="change-type selling off">SELL</span>
+                        <span class="change-values muted">No change</span>
+                      </div>
+                    {/if}
+                  </div>
+                </div>
+              {/each}
             </div>
           {/if}
         {/if}
-      </div>
+      </section>
 
-      <!-- ── Overview ── -->
-      <div class="card">
-        <h3>
-          <BarChart3 size={18} strokeWidth={2} />
-          Overview
-        </h3>
-        <ul class="overview-list">
-          <li><span>Total Products:</span><strong>{summary.counts.total_products}</strong></li>
-          <li><span>Total Sales:</span><strong>{summary.counts.total_sales}</strong></li>
-        </ul>
-      </div>
+      <!-- ── Top products ── -->
+      <section class="card" class:collapsed={!openSections.top}>
+        <div class="card-header">
+          <h3>
+            <Trophy size={18} strokeWidth={2} />
+            Top 5 Products
+          </h3>
+          <button
+            class="icon-btn small"
+            on:click={() => toggle("top")}
+            type="button"
+          >
+            <ChevronDown size={14} class:rotated={!openSections.top} />
+          </button>
+        </div>
+        {#if openSections.top}
+          {#if topDetailed.length === 0}
+            <p class="empty-text">No sales data for this period.</p>
+          {:else}
+            <div class="top-list">
+              {#each topDetailed as product, i}
+                <div class="top-row">
+                  <span class="top-rank">{i + 1}</span>
+                  <div class="top-main">
+                    <div class="top-name-line">
+                      <strong>{product.name}</strong>
+                      {#if product.is_variant && product.parent_name}
+                        <span class="parent-tag">
+                          <Layers size={11} strokeWidth={2} /> {product.parent_name}
+                        </span>
+                      {/if}
+                    </div>
+                    {#if product.category}
+                      <div class="top-meta">
+                        <span class="cat-chip">{product.category}</span>
+                      </div>
+                    {/if}
+                  </div>
+                  <div class="top-qty">
+                    <strong>{product.quantity}</strong>
+                    <span>units</span>
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {/if}
+        {/if}
+      </section>
 
-      <!-- Exports -->
+      <!-- ── Category performance ── -->
+      <section class="card" class:collapsed={!openSections.category}>
+        <div class="card-header">
+          <h3>
+            <Tags size={18} strokeWidth={2} />
+            Category Performance
+          </h3>
+          <button
+            class="icon-btn small"
+            on:click={() => toggle("category")}
+            type="button"
+          >
+            <ChevronDown size={14} class:rotated={!openSections.category} />
+          </button>
+        </div>
+        {#if openSections.category}
+          {#if categoryPerf.length === 0}
+            <p class="empty-text">No category sales in this period.</p>
+          {:else}
+            <div class="cat-perf-list">
+              {#each categoryPerf as cat}
+                <div class="cp-row">
+                  <div class="cp-top">
+                    <strong class="cp-name">{cat.category}</strong>
+                    <span class="cp-rev">MWK {fmt(cat.revenue)}</span>
+                  </div>
+                  <div class="cp-bar-wrap">
+                    <div
+                      class="cp-bar"
+                      style="width: {Math.min(100, cat.revenue_percent || 0)}%"
+                    ></div>
+                  </div>
+                  <div class="cp-meta">
+                    <span>{cat.revenue_percent}% of revenue</span>
+                    <span>{cat.quantity} units · {cat.sale_count} sale{cat.sale_count === 1 ? "" : "s"}</span>
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {/if}
+        {/if}
+      </section>
+
+      <!-- ── Market Basket Analysis ── -->
+      <section class="card" class:collapsed={!openSections.marketBasket}>
+        <div class="card-header">
+          <h3>
+            <ShoppingBasket size={18} strokeWidth={2} />
+            Frequently Bought Together
+          </h3>
+          <div class="card-actions">
+            <select bind:value={mbPeriod} on:change={fetchMarketBasket} class="small-select">
+              <option value="week">This Week</option>
+              <option value="month">This Month</option>
+              <option value="all">All Time</option>
+            </select>
+            <select
+              bind:value={mbMinSupport}
+              on:change={fetchMarketBasket}
+              class="small-select"
+              title="Minimum times the pair must appear together"
+            >
+              <option value={2}>≥2 co-buys</option>
+              <option value={3}>≥3 co-buys</option>
+              <option value={5}>≥5 co-buys</option>
+              <option value={10}>≥10 co-buys</option>
+            </select>
+            <button
+              class="icon-btn small"
+              on:click={fetchMarketBasket}
+              title="Refresh"
+              type="button"
+            >
+              <RefreshCw size={14} class:spin={marketBasketLoading} />
+            </button>
+            <button
+              class="icon-btn small"
+              on:click={() => toggle("marketBasket")}
+              title="Toggle section"
+              type="button"
+            >
+              <ChevronDown size={14} class:rotated={!openSections.marketBasket} />
+            </button>
+          </div>
+        </div>
+
+        {#if openSections.marketBasket}
+          {#if marketBasketLoading && !marketBasket}
+            <div class="state-inline">
+              <Loader2 size={16} class="spin" /> Analysing baskets…
+            </div>
+          {:else if marketBasketError}
+            <p class="empty-text">{marketBasketError}</p>
+          {:else if !marketBasket || marketBasket.pairs.length === 0}
+            <p class="empty-text">
+              Not enough multi-item transactions in this period yet.
+            </p>
+          {:else}
+            <div class="mb-meta">
+              <span>
+                Analysed <strong>{marketBasket.baskets_analyzed}</strong>
+                sale{marketBasket.baskets_analyzed === 1 ? "" : "s"}
+              </span>
+              <span class="mb-hint">
+                <Info size={12} strokeWidth={2} />
+                Lift &gt; 1.0 = bought together more than chance
+              </span>
+            </div>
+
+            <div class="mb-list">
+              {#each marketBasket.pairs as pair, i}
+                <div class="mb-row" class:top={i === 0}>
+                  <div class="mb-pair">
+                    <span class="mb-product" title={pair.product_a.name}>
+                      {pair.product_a.name}
+                    </span>
+                    <ArrowRight size={14} class="mb-arrow" />
+                    <span class="mb-product" title={pair.product_b.name}>
+                      {pair.product_b.name}
+                    </span>
+                  </div>
+                  <div class="mb-stats">
+                    <span class="mb-stat" title="Times bought together">
+                      <strong>{pair.co_count}</strong>×
+                    </span>
+                    <span class="mb-stat lift" title="Lift — higher = stronger correlation">
+                      <strong>{pair.lift.toFixed(1)}</strong> lift
+                    </span>
+                    <span class="mb-stat conf" title="Probability that B is in the basket given A is">
+                      {Math.round(pair.confidence_ab * 100)}%
+                    </span>
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {/if}
+        {/if}
+      </section>
+
+      <!-- ── Profit margins ── -->
+      <section class="card" class:collapsed={!openSections.margins}>
+        <div class="card-header">
+          <h3>
+            <PiggyBank size={18} strokeWidth={2} />
+            Profit Margin by Product
+          </h3>
+          <button
+            class="icon-btn small"
+            on:click={() => toggle("margins")}
+            type="button"
+          >
+            <ChevronDown size={14} class:rotated={!openSections.margins} />
+          </button>
+        </div>
+        {#if openSections.margins}
+          {#if bestWorst && bestWorst.count > 1}
+            <div class="best-worst-row">
+              <div class="bw-cell best">
+                <span>Best margin</span>
+                <strong>{bestWorst.best.name}</strong>
+                <span class="bw-pct">{bestWorst.best.margin_percent.toFixed(1)}%</span>
+              </div>
+              <div class="bw-cell worst">
+                <span>Worst margin</span>
+                <strong>{bestWorst.worst.name}</strong>
+                <span class="bw-pct">{bestWorst.worst.margin_percent.toFixed(1)}%</span>
+              </div>
+            </div>
+          {/if}
+
+          {#if margins.length === 0}
+            <p class="empty-text">No sales data available.</p>
+          {:else}
+            <div class="table-wrapper margin-table-wrap">
+              <table class="margin-table">
+                <thead>
+                  <tr>
+                    <th>Product</th>
+                    <th class="num">Revenue</th>
+                    <th class="num">Cost</th>
+                    <th class="num">Profit</th>
+                    <th class="num">Margin</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each pagedMargins as item}
+                    <tr>
+                      <td class="name-cell">{item.name}</td>
+                      <td class="num">{fmt(item.revenue)}</td>
+                      <td class="num">{fmt(item.cost)}</td>
+                      <td class="num">{fmt(item.profit)}</td>
+                      <td class="num margin-value">{item.margin_percent}%</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+
+            <div class="margin-cards">
+              {#each pagedMargins as item}
+                <div class="margin-card">
+                  <div class="mc-header">
+                    <strong>{item.name}</strong>
+                    <span class="mc-margin">{item.margin_percent}%</span>
+                  </div>
+                  <div class="mc-row"><span>Revenue</span><span>MWK {fmt(item.revenue)}</span></div>
+                  <div class="mc-row"><span>Cost</span><span>MWK {fmt(item.cost)}</span></div>
+                  <div class="mc-row"><span>Profit</span><span class="mc-profit">MWK {fmt(item.profit)}</span></div>
+                </div>
+              {/each}
+            </div>
+
+            {#if marginPageCount > 1}
+              <div class="pagination">
+                <button class="page-btn" on:click={prevMargin} disabled={marginPage === 0} type="button" aria-label="Previous">
+                  <ChevronLeft size={16} />
+                </button>
+                <span class="page-info">
+                  {marginPage * PAGE_SIZE + 1}–{Math.min((marginPage + 1) * PAGE_SIZE, margins.length)}
+                  of {margins.length}
+                </span>
+                <button class="page-btn" on:click={nextMargin} disabled={marginPage >= marginPageCount - 1} type="button" aria-label="Next">
+                  <ChevronRight size={16} />
+                </button>
+              </div>
+            {/if}
+          {/if}
+        {/if}
+      </section>
+
+      <!-- ── Peak hours ── -->
+      <section class="card" class:collapsed={!openSections.peak}>
+        <div class="card-header">
+          <h3>
+            <Clock size={18} strokeWidth={2} />
+            Busiest Hours
+          </h3>
+          <button
+            class="icon-btn small"
+            on:click={() => toggle("peak")}
+            type="button"
+          >
+            <ChevronDown size={14} class:rotated={!openSections.peak} />
+          </button>
+        </div>
+        {#if openSections.peak}
+          <div class="peak-chart-wrapper">
+            <div class="peak-chart">
+              {#each summary.peak_hours as count, hour}
+                <div class="peak-bar-container">
+                  <div class="peak-bar" style="height: {Math.max(3, (count / maxPeak) * 100)}%">
+                    {#if count > 0}<span class="peak-value">{count}</span>{/if}
+                  </div>
+                  <span class="peak-label">{hour}</span>
+                </div>
+              {/each}
+            </div>
+          </div>
+          <p class="chart-hint">Bars show sales count per hour (0–23)</p>
+        {/if}
+      </section>
+
+      <!-- ── Expenses ── -->
+      <section class="card" class:collapsed={!openSections.expenses}>
+        <div class="card-header">
+          <h3>
+            <Receipt size={18} strokeWidth={2} />
+            Expenses by Category
+          </h3>
+          <button
+            class="icon-btn small"
+            on:click={() => toggle("expenses")}
+            type="button"
+          >
+            <ChevronDown size={14} class:rotated={!openSections.expenses} />
+          </button>
+        </div>
+        {#if openSections.expenses}
+          {#if expenses.length === 0}
+            <p class="empty-text">No expenses recorded.</p>
+          {:else}
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Category</th>
+                    <th class="num">Amount</th>
+                    <th class="action-col"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each pagedExpenses as item}
+                    <tr
+                      class="clickable-row"
+                      on:click={() => openDrilldown(item.category)}
+                      on:keydown={(e) => e.key === "Enter" && openDrilldown(item.category)}
+                      role="button"
+                      tabindex="0"
+                    >
+                      <td>{item.category || "Uncategorized"}</td>
+                      <td class="num">MWK {Number(item.total || 0).toFixed(2)}</td>
+                      <td class="action-col"><ChevronRight size={16} strokeWidth={2} class="chev-icon" /></td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+
+            {#if expensePageCount > 1}
+              <div class="pagination">
+                <button class="page-btn" on:click={prevExpense} disabled={expensePage === 0} type="button" aria-label="Previous">
+                  <ChevronLeft size={16} />
+                </button>
+                <span class="page-info">
+                  {expensePage * PAGE_SIZE + 1}–{Math.min((expensePage + 1) * PAGE_SIZE, expenses.length)}
+                  of {expenses.length}
+                </span>
+                <button class="page-btn" on:click={nextExpense} disabled={expensePage >= expensePageCount - 1} type="button" aria-label="Next">
+                  <ChevronRight size={16} />
+                </button>
+              </div>
+            {/if}
+          {/if}
+        {/if}
+      </section>
+
+      <!-- ── Exports ── -->
       <div class="export-actions">
         <button class="btn" on:click={exportSales} type="button">
           <FileSpreadsheet size={16} strokeWidth={2} /> Export Sales
@@ -575,14 +892,17 @@
     {/if}
   </div>
 
-  {#if drilldownCategory !== null}
-    <ExpenseDrilldownModal category={drilldownCategory} on:close={closeDrilldown} />
+  {#if drilldownCategory}
+    {#key drilldownCategory}
+      <ExpenseDrilldownModal
+        category={drilldownCategory}
+        on:close={closeDrilldown}
+      />
+    {/key}
   {/if}
 </Layout>
 
 <style>
-  /* Same styles as before, plus the new ones below */
-
   .insights-page {
     max-width: 900px;
     margin: 0 auto;
@@ -607,11 +927,41 @@
     font-weight: 600;
     color: var(--text, #111827);
   }
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
   .timestamp {
     font-size: 0.75rem;
     color: var(--text-light, #6b7280);
     margin: 0;
   }
+  .icon-btn {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 6px;
+    padding: 0.35rem;
+    cursor: pointer;
+    color: var(--text-light, #6b7280);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 0;
+    transition: all 0.15s;
+  }
+  .icon-btn:hover {
+    border-color: var(--primary, #0f6b3e);
+    color: var(--primary, #0f6b3e);
+  }
+  .icon-btn.small {
+    padding: 0.25rem;
+  }
+  .spin {
+    animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
   .state-box {
     display: flex;
     flex-direction: column;
@@ -622,6 +972,15 @@
     text-align: center;
   }
   .state-box.error { color: var(--danger, #dc2626); }
+  .state-inline {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    padding: 1.5rem 1rem;
+    color: var(--text-light, #6b7280);
+    font-size: 0.85rem;
+  }
   .spinner {
     width: 28px;
     height: 28px;
@@ -630,170 +989,403 @@
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
   }
-  @keyframes spin { to { transform: rotate(360deg); } }
 
-  .glance-card {
-    background: linear-gradient(135deg, #eef2ff 0%, #ffffff 100%);
-    border: 1px solid #c7d2fe;
-    border-radius: 12px;
-    padding: 0.9rem 1rem;
+  /* KPI strip */
+  .kpi-strip {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0.6rem;
   }
-  .glance-header {
-    display: flex; align-items: center; gap: 0.4rem;
-    font-size: 0.78rem; font-weight: 700; text-transform: uppercase;
-    letter-spacing: 0.04em; color: #3730a3; margin-bottom: 0.6rem;
+  .kpi {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 10px;
+    padding: 0.7rem 0.85rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    min-width: 0;
   }
-  .glance-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.55rem; }
-  .glance-cell { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
-  .gl-label {
-    font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em;
-    color: var(--text-light, #6b7280); font-weight: 600;
+  .kpi-label {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-light, #6b7280);
+    font-weight: 600;
   }
-  .gl-value {
-    font-size: 1.05rem; font-weight: 700; color: var(--text, #111827);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  .kpi-value {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--text, #111827);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
-  .gl-delta {
-    display: inline-flex; align-items: center; gap: 0.15rem;
-    font-size: 0.7rem; font-weight: 600; color: var(--text-light, #6b7280);
+
+  .cashflow-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.6rem;
   }
-  .gl-delta.up { color: #166534; }
-  .gl-delta.down { color: #991b1b; }
+  .cf-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    padding: 0.65rem 0.85rem;
+    border-radius: 10px;
+    border: 1px solid var(--border, #e5e7eb);
+    background: var(--surface, #fff);
+  }
+  .cf-cell span {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--text-light, #6b7280);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .cf-cell strong { font-size: 1rem; font-weight: 700; color: var(--text, #111827); }
+  .cf-cell.income { background: #f0fdf4; border-color: #86efac; }
+  .cf-cell.income strong { color: #166534; }
+  .cf-cell.expense { background: #fef2f2; border-color: #fecaca; }
+  .cf-cell.expense strong { color: #991b1b; }
+  .cf-cell.net { background: #eef2ff; border-color: #c7d2fe; }
+  .cf-cell.net strong { color: #3730a3; }
+  .cf-cell.net strong.negative { color: #991b1b; }
+
+  .alert-card {
+    border-color: #fcd34d;
+    background: #fffbeb;
+  }
+  .alert-card h3 { color: #92400e; margin-bottom: 0.6rem; }
+  .low-stock-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  .low-stock-list li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.88rem;
+    padding: 0.35rem 0;
+    border-bottom: 1px dashed #fde68a;
+  }
+  .low-stock-list li:last-child { border-bottom: none; }
+  .badge {
+    background: #fef3c7;
+    color: #92400e;
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 0.15rem 0.5rem;
+    border-radius: 20px;
+  }
 
   .period-selector {
-    display: flex; align-items: center; gap: 0.75rem;
-    background: var(--surface, #fff); padding: 0.85rem;
-    border-radius: 10px; border: 1px solid var(--border, #e5e7eb);
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    background: var(--surface, #fff);
+    padding: 0.6rem 0.85rem;
+    border-radius: 10px;
+    border: 1px solid var(--border, #e5e7eb);
     flex-wrap: wrap;
   }
-  .period-selector label { font-size: 0.9rem; color: var(--text, #111827); }
-  .period-selector select {
-    padding: 0.45rem 0.7rem; border-radius: 8px;
-    border: 1px solid var(--border, #e5e7eb);
-    background: var(--surface, #fff); color: var(--text, #111827);
-    font-size: 0.9rem;
+  .period-selector label {
+    font-size: 0.85rem;
+    color: var(--text, #111827);
+    font-weight: 500;
   }
+  .segmented {
+    display: inline-flex;
+    background: var(--background, #f9fafb);
+    border-radius: 8px;
+    padding: 0.15rem;
+    gap: 0.15rem;
+  }
+  .segmented button {
+    background: transparent;
+    border: none;
+    padding: 0.35rem 0.75rem;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    font-weight: 500;
+    cursor: pointer;
+    color: var(--text-light, #6b7280);
+    transition: all 0.15s;
+  }
+  .segmented button.active {
+    background: var(--primary, #0f6b3e);
+    color: #fff;
+  }
+
   .card {
-    background: var(--surface, #fff); border-radius: 12px;
-    padding: 1.25rem; border: 1px solid var(--border, #e5e7eb);
+    background: var(--surface, #fff);
+    border-radius: 12px;
+    padding: 1.25rem;
+    border: 1px solid var(--border, #e5e7eb);
     overflow: hidden;
   }
-  .card h3 {
-    display: flex; align-items: center; gap: 0.5rem;
-    margin-top: 0; margin-bottom: 1rem;
-    font-size: 1rem; font-weight: 600; color: var(--text, #111827);
+  .card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.8rem;
+    flex-wrap: wrap;
   }
+  .card-header h3 {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text, #111827);
+  }
+  .card-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .small-select {
+    padding: 0.3rem 0.55rem;
+    border-radius: 6px;
+    border: 1px solid var(--border, #e5e7eb);
+    background: var(--surface, #fff);
+    color: var(--text, #111827);
+    font-size: 0.78rem;
+  }
+  .rotated { transform: rotate(-90deg); }
+  .card.collapsed { padding-bottom: 1rem; }
+
   .table-wrapper { overflow-x: auto; border-radius: 8px; }
   table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
   th, td {
-    text-align: left; padding: 0.6rem 0.5rem;
+    text-align: left;
+    padding: 0.6rem 0.5rem;
     border-bottom: 1px solid var(--border, #e5e7eb);
   }
   th {
-    background: var(--background, #f9fafb); font-weight: 600;
-    color: var(--text-light, #6b7280); font-size: 0.78rem;
+    background: var(--background, #f9fafb);
+    font-weight: 600;
+    color: var(--text-light, #6b7280);
+    font-size: 0.78rem;
     text-transform: uppercase;
   }
   th.num, td.num { text-align: right; white-space: nowrap; }
   .margin-value { font-weight: 600; color: var(--success, #16a34a); }
-  .name-cell { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .name-cell {
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .empty-text {
-    text-align: center; padding: 1.5rem;
-    color: var(--text-light, #6b7280); font-size: 0.9rem;
+    text-align: center;
+    padding: 1.5rem;
+    color: var(--text-light, #6b7280);
+    font-size: 0.9rem;
   }
 
-  /* NEW: Top 5 list */
+  /* Top products */
   .top-list { display: flex; flex-direction: column; gap: 0.4rem; }
   .top-row {
-    display: flex; align-items: center; gap: 0.6rem;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
     padding: 0.55rem 0.7rem;
     background: var(--background, #f9fafb);
     border: 1px solid var(--border, #e5e7eb);
     border-radius: 8px;
   }
   .top-rank {
-    width: 24px; height: 24px; flex-shrink: 0;
-    display: inline-flex; align-items: center; justify-content: center;
-    background: var(--primary, #0f6b3e); color: white;
-    border-radius: 50%; font-size: 0.75rem; font-weight: 700;
+    width: 24px;
+    height: 24px;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--primary, #0f6b3e);
+    color: white;
+    border-radius: 50%;
+    font-size: 0.75rem;
+    font-weight: 700;
   }
   .top-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.1rem; }
   .top-name-line { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
-  .top-name-line strong {
-    font-size: 0.88rem; color: var(--text, #111827); font-weight: 600;
-  }
+  .top-name-line strong { font-size: 0.88rem; color: var(--text, #111827); font-weight: 600; }
   .parent-tag {
-    display: inline-flex; align-items: center; gap: 0.15rem;
-    font-size: 0.68rem; font-weight: 500;
-    background: #dbeafe; color: #1e40af;
-    padding: 0.1rem 0.4rem; border-radius: 20px;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.15rem;
+    font-size: 0.68rem;
+    font-weight: 500;
+    background: #dbeafe;
+    color: #1e40af;
+    padding: 0.1rem 0.4rem;
+    border-radius: 20px;
   }
   .top-meta { display: flex; align-items: center; gap: 0.3rem; }
   .cat-chip {
-    display: inline-block; font-size: 0.68rem; font-weight: 500;
+    display: inline-block;
+    font-size: 0.68rem;
+    font-weight: 500;
     background: var(--background, #f9fafb);
     border: 1px solid var(--border, #e5e7eb);
     color: var(--text-light, #6b7280);
-    padding: 0.05rem 0.4rem; border-radius: 20px;
+    padding: 0.05rem 0.4rem;
+    border-radius: 20px;
   }
   .top-qty { display: flex; flex-direction: column; align-items: flex-end; flex-shrink: 0; }
-  .top-qty strong {
-    font-size: 1rem; font-weight: 700; color: var(--primary, #0f6b3e);
-  }
+  .top-qty strong { font-size: 1rem; font-weight: 700; color: var(--primary, #0f6b3e); }
   .top-qty span { font-size: 0.68rem; color: var(--text-light, #6b7280); }
 
-  /* NEW: Category performance */
+  /* Category performance */
   .cat-perf-list { display: flex; flex-direction: column; gap: 0.65rem; }
   .cp-row { display: flex; flex-direction: column; gap: 0.3rem; }
   .cp-top { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; }
   .cp-name { font-size: 0.9rem; font-weight: 600; color: var(--text, #111827); }
   .cp-rev { font-size: 0.85rem; font-weight: 700; color: var(--primary, #0f6b3e); }
   .cp-bar-wrap {
-    width: 100%; height: 6px; background: var(--background, #f3f4f6);
-    border-radius: 4px; overflow: hidden;
+    width: 100%;
+    height: 6px;
+    background: var(--background, #f3f4f6);
+    border-radius: 4px;
+    overflow: hidden;
   }
   .cp-bar {
-    height: 100%; background: var(--primary, #0f6b3e);
-    border-radius: 4px; transition: width 0.3s;
+    height: 100%;
+    background: var(--primary, #0f6b3e);
+    border-radius: 4px;
+    transition: width 0.3s;
   }
   .cp-meta {
-    display: flex; justify-content: space-between;
-    font-size: 0.72rem; color: var(--text-light, #6b7280);
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.72rem;
+    color: var(--text-light, #6b7280);
   }
 
-  .overview-list {
-    list-style: none; padding: 0; margin: 0;
-    display: flex; flex-direction: column; gap: 0.5rem;
+  /* Market basket */
+  .mb-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    font-size: 0.75rem;
+    color: var(--text-light, #6b7280);
+    margin-bottom: 0.6rem;
   }
-  .overview-list li {
-    display: flex; justify-content: space-between;
-    padding: 0.5rem 0; border-bottom: 1px dashed var(--border, #e5e7eb);
-    font-size: 0.9rem;
+  .mb-meta strong { color: var(--text, #111827); }
+  .mb-hint {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
   }
-  .overview-list li:last-child { border-bottom: none; }
-  .overview-list span { color: var(--text-light, #6b7280); }
+  .mb-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .mb-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.6rem 0.75rem;
+    background: var(--background, #f9fafb);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+    flex-wrap: wrap;
+  }
+  .mb-row.top {
+    background: #f0fdf4;
+    border-color: #86efac;
+  }
+  .mb-pair {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    min-width: 0;
+    flex: 1;
+  }
+  .mb-product {
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: var(--text, #111827);
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mb-arrow {
+    color: var(--text-light, #6b7280);
+    flex-shrink: 0;
+  }
+  .mb-stats {
+    display: flex;
+    gap: 0.4rem;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+  }
+  .mb-stat {
+    font-size: 0.72rem;
+    color: var(--text-light, #6b7280);
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    padding: 0.15rem 0.5rem;
+    border-radius: 20px;
+    white-space: nowrap;
+  }
+  .mb-stat strong { color: var(--text, #111827); font-weight: 700; }
+  .mb-stat.lift {
+    background: #eef2ff;
+    border-color: #c7d2fe;
+    color: #3730a3;
+  }
+  .mb-stat.lift strong { color: #1e40af; }
+  .mb-stat.conf {
+    background: #fef3c7;
+    border-color: #fde68a;
+    color: #92400e;
+  }
 
   /* Price changes */
   .price-changes-list { display: flex; flex-direction: column; gap: 0.65rem; }
   .price-change-item {
-    padding: 0.75rem; background: var(--background, #f9fafb);
-    border-radius: 8px; border: 1px solid var(--border, #e5e7eb);
+    padding: 0.75rem;
+    background: var(--background, #f9fafb);
+    border-radius: 8px;
+    border: 1px solid var(--border, #e5e7eb);
   }
   .product-header {
-    display: flex; justify-content: space-between; align-items: center;
-    margin-bottom: 0.5rem; gap: 0.5rem; flex-wrap: wrap;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+    gap: 0.5rem;
+    flex-wrap: wrap;
   }
   .product-header strong { font-size: 0.95rem; color: var(--text, #111827); }
   .current-margin { font-size: 0.78rem; color: var(--text-light, #6b7280); }
   .changes-list { display: flex; flex-direction: column; gap: 0.35rem; }
   .change-line {
-    display: flex; align-items: center; gap: 0.5rem;
-    flex-wrap: wrap; font-size: 0.82rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    font-size: 0.82rem;
   }
   .change-line.muted { opacity: 0.6; }
   .change-type {
-    font-size: 0.62rem; font-weight: 700;
-    padding: 0.1rem 0.35rem; border-radius: 3px;
+    font-size: 0.62rem;
+    font-weight: 700;
+    padding: 0.1rem 0.35rem;
+    border-radius: 3px;
     letter-spacing: 0.3px;
   }
   .change-type.selling { background: #dbeafe; color: #1e40af; }
@@ -802,39 +1394,58 @@
   .change-values { color: var(--text, #111827); font-weight: 500; }
   .change-values.muted { color: var(--text-light, #6b7280); font-style: italic; font-weight: 400; }
   .pct {
-    display: inline-flex; align-items: center; gap: 0.1rem;
-    font-size: 0.72rem; font-weight: 600;
-    padding: 0.1rem 0.35rem; border-radius: 20px;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.1rem;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.1rem 0.35rem;
+    border-radius: 20px;
   }
   .pct.up { background: #dcfce7; color: #166534; }
   .pct.down { background: #fee2e2; color: #991b1b; }
   .pct.flat { background: var(--surface, #fff); color: var(--text-light, #6b7280); }
   .change-date {
-    margin-left: auto; font-size: 0.72rem; color: var(--text-light, #6b7280);
+    margin-left: auto;
+    font-size: 0.72rem;
+    color: var(--text-light, #6b7280);
   }
 
   .best-worst-row {
-    display: grid; grid-template-columns: 1fr 1fr;
-    gap: 0.6rem; margin-bottom: 1rem;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.6rem;
+    margin-bottom: 1rem;
   }
   .bw-cell {
-    display: flex; flex-direction: column; gap: 0.15rem;
-    padding: 0.6rem 0.75rem; border-radius: 8px;
-    font-size: 0.82rem; min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    padding: 0.6rem 0.75rem;
+    border-radius: 8px;
+    font-size: 0.82rem;
+    min-width: 0;
   }
   .bw-cell span:first-child {
-    font-size: 0.7rem; text-transform: uppercase;
-    letter-spacing: 0.04em; font-weight: 600;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: 600;
     color: var(--text-light, #6b7280);
   }
   .bw-cell strong {
-    font-size: 0.95rem; font-weight: 600;
+    font-size: 0.95rem;
+    font-weight: 600;
     color: var(--text, #111827);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .bw-cell .bw-pct {
-    font-size: 0.8rem; font-weight: 700;
-    text-transform: none; letter-spacing: 0;
+    font-size: 0.8rem;
+    font-weight: 700;
+    text-transform: none;
+    letter-spacing: 0;
   }
   .bw-cell.best { background: #f0fdf4; border: 1px solid #86efac; }
   .bw-cell.best .bw-pct { color: #166534; }
@@ -845,41 +1456,65 @@
   .margin-card {
     background: var(--background, #f9fafb);
     border: 1px solid var(--border, #e5e7eb);
-    border-radius: 8px; padding: 0.65rem 0.75rem;
+    border-radius: 8px;
+    padding: 0.65rem 0.75rem;
   }
   .mc-header {
-    display: flex; justify-content: space-between;
-    align-items: baseline; gap: 0.5rem; margin-bottom: 0.35rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.5rem;
+    margin-bottom: 0.35rem;
   }
   .mc-header strong {
-    font-size: 0.9rem; color: var(--text, #111827);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+    font-size: 0.9rem;
+    color: var(--text, #111827);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
   }
   .mc-margin { font-weight: 700; color: #166534; font-size: 0.88rem; flex-shrink: 0; }
   .mc-row {
-    display: flex; justify-content: space-between;
-    font-size: 0.78rem; color: var(--text-light, #6b7280); padding: 0.1rem 0;
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.78rem;
+    color: var(--text-light, #6b7280);
+    padding: 0.1rem 0;
   }
   .mc-row .mc-profit { color: var(--text, #111827); font-weight: 600; }
 
   .pagination {
-    display: flex; align-items: center; justify-content: center;
-    gap: 0.6rem; padding: 0.75rem 0 0;
-    margin-top: 0.5rem; border-top: 1px solid var(--border, #e5e7eb);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.6rem;
+    padding: 0.75rem 0 0;
+    margin-top: 0.5rem;
+    border-top: 1px solid var(--border, #e5e7eb);
   }
   .page-btn {
-    display: inline-flex; align-items: center; justify-content: center;
-    width: 32px; height: 32px; border-radius: 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
     border: 1px solid var(--border, #e5e7eb);
-    background: var(--surface, #fff); color: var(--text, #111827);
-    cursor: pointer; transition: all 0.15s;
+    background: var(--surface, #fff);
+    color: var(--text, #111827);
+    cursor: pointer;
+    transition: all 0.15s;
   }
   .page-btn:hover:not(:disabled) {
-    border-color: var(--primary, #0f6b3e); color: var(--primary, #0f6b3e);
+    border-color: var(--primary, #0f6b3e);
+    color: var(--primary, #0f6b3e);
   }
   .page-btn:disabled { opacity: 0.4; cursor: not-allowed; }
   .page-info {
-    font-size: 0.8rem; color: var(--text-light, #6b7280); font-weight: 500;
+    font-size: 0.8rem;
+    color: var(--text-light, #6b7280);
+    font-weight: 500;
   }
 
   .clickable-row { cursor: pointer; transition: background 0.15s; }
@@ -889,51 +1524,85 @@
 
   .peak-chart-wrapper { width: 100%; overflow: hidden; }
   .peak-chart {
-    display: flex; align-items: flex-end; gap: 0.15rem;
-    height: 140px; width: 100%; box-sizing: border-box;
+    display: flex;
+    align-items: flex-end;
+    gap: 0.15rem;
+    height: 140px;
+    width: 100%;
+    box-sizing: border-box;
   }
   .peak-bar-container {
-    flex: 1 1 0; min-width: 0; display: flex;
-    flex-direction: column; align-items: center;
-    height: 100%; justify-content: flex-end;
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    height: 100%;
+    justify-content: flex-end;
   }
   .peak-bar {
-    width: 100%; background: var(--primary, #0f6b3e);
-    border-radius: 2px 2px 0 0; min-height: 3px;
-    position: relative; transition: height 0.3s;
-    display: flex; justify-content: center; align-items: flex-start;
-    padding-top: 0.15rem; box-sizing: border-box; overflow: hidden;
+    width: 100%;
+    background: var(--primary, #0f6b3e);
+    border-radius: 2px 2px 0 0;
+    min-height: 3px;
+    position: relative;
+    transition: height 0.3s;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    padding-top: 0.15rem;
+    box-sizing: border-box;
+    overflow: hidden;
   }
   .peak-value { color: white; font-size: 0.55rem; font-weight: 700; line-height: 1; }
   .peak-label {
-    margin-top: 0.25rem; font-size: 0.58rem;
-    color: var(--text-light, #6b7280); text-align: center;
+    margin-top: 0.25rem;
+    font-size: 0.58rem;
+    color: var(--text-light, #6b7280);
+    text-align: center;
   }
   .chart-hint {
-    text-align: center; font-size: 0.75rem;
+    text-align: center;
+    font-size: 0.75rem;
     color: var(--text-light, #6b7280);
-    margin-top: 0.5rem; margin-bottom: 0;
+    margin-top: 0.5rem;
+    margin-bottom: 0;
   }
 
   .export-actions {
-    display: flex; gap: 0.6rem; flex-wrap: wrap; margin-top: 0.5rem;
+    display: flex;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    margin-top: 0.5rem;
   }
   .btn {
-    display: inline-flex; align-items: center; gap: 0.4rem;
-    padding: 0.55rem 1rem; border-radius: 8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.55rem 1rem;
+    border-radius: 8px;
     border: 1px solid var(--border, #e5e7eb);
-    background: var(--surface, #fff); color: var(--text, #111827);
-    cursor: pointer; font-weight: 500; font-size: 0.9rem;
+    background: var(--surface, #fff);
+    color: var(--text, #111827);
+    cursor: pointer;
+    font-weight: 500;
+    font-size: 0.9rem;
     transition: all 0.15s;
   }
   .btn:hover { border-color: var(--primary, #0f6b3e); color: var(--primary, #0f6b3e); }
-  .btn-primary { background: var(--primary, #0f6b3e); color: white; border-color: var(--primary, #0f6b3e); }
+  .btn-primary {
+    background: var(--primary, #0f6b3e);
+    color: white;
+    border-color: var(--primary, #0f6b3e);
+  }
 
   @media (max-width: 768px) {
     .card { padding: 1rem; }
-    .glance-grid { grid-template-columns: repeat(2, 1fr); gap: 0.55rem 0.75rem; }
+    .kpi-strip { grid-template-columns: repeat(2, 1fr); }
+    .cashflow-row { grid-template-columns: 1fr; }
     .period-selector { flex-direction: column; align-items: stretch; }
-    .period-selector select { width: 100%; }
+    .segmented { width: 100%; }
+    .segmented button { flex: 1; }
     .peak-chart { height: 110px; }
     .peak-value { display: none; }
     .peak-label { font-size: 0.5rem; }
@@ -947,6 +1616,9 @@
     .best-worst-row { grid-template-columns: 1fr; gap: 0.45rem; }
     th, td { padding: 0.45rem 0.35rem; font-size: 0.82rem; }
     .peak-chart { height: 90px; }
-    .gl-value { font-size: 0.95rem; }
+    .kpi-value { font-size: 0.95rem; }
+    .mb-row { flex-direction: column; align-items: flex-start; gap: 0.4rem; }
+    .mb-product { max-width: 120px; }
+    .mb-stats { width: 100%; justify-content: flex-start; }
   }
 </style>

@@ -12,6 +12,7 @@
     Wallet,
     CreditCard,
     AlertTriangle,
+    ChevronUp,
   } from "lucide-svelte";
   import Layout from "../components/Layout.svelte";
   import CartItem from "../components/CartItem.svelte";
@@ -23,6 +24,7 @@
   let cart = [];
   let searchTerm = "";
   let loading = false;
+  let productsLoading = true;
 
   // Cash tender / change
   let cashGiven = 0;
@@ -39,7 +41,7 @@
   // Customer autocomplete state
   let customerSearch = "";
   let customerDropdownOpen = false;
-  const AUTOCOMPLETE_THRESHOLD = 30; // show search UI when >= this many customers
+  const AUTOCOMPLETE_THRESHOLD = 30;
 
   // Success + receipt
   let checkoutSuccess = false;
@@ -53,11 +55,13 @@
   let loadingVariants = false;
 
   // Session state
-  let sessionActive = true; // optimistic; we fetch on mount
+  let sessionActive = true;
   let sessionChecked = false;
 
-  // Modal stack tracking for back-button handling
-  // Any modal-opening action pushes a history entry; popstate closes it.
+  // Mobile cart drawer state
+  let mobileCartOpen = false;
+
+  // Modal stack tracking
   let modalHistoryDepth = 0;
 
   // Toast
@@ -70,13 +74,11 @@
     toastTimer = setTimeout(() => (toast = { ...toast, visible: false }), ms);
   }
 
-  // ── Session check ──
   async function checkSession() {
     try {
       const res = await API.get("/sessions/current");
       sessionActive = !!(res.data && res.data.id);
     } catch {
-      // If the endpoint errors, don't block the POS — assume session exists
       sessionActive = true;
     } finally {
       sessionChecked = true;
@@ -87,7 +89,6 @@
     window.dispatchEvent(new CustomEvent("phindu:open-session"));
   }
 
-  // ── Back-button / modal handling ──
   function pushModalHistory() {
     if (typeof window === "undefined") return;
     window.history.pushState({ posModal: true }, "");
@@ -103,7 +104,6 @@
   }
 
   function handlePopState() {
-    // A modal is open → close it
     if (showVariantPicker) {
       showVariantPicker = false;
       variantParent = null;
@@ -123,9 +123,13 @@
       modalHistoryDepth = Math.max(0, modalHistoryDepth - 1);
       return;
     }
+    if (mobileCartOpen) {
+      mobileCartOpen = false;
+      modalHistoryDepth = Math.max(0, modalHistoryDepth - 1);
+      return;
+    }
   }
 
-  // ── beforeunload guard ──
   function handleBeforeUnload(e) {
     if (cart.length > 0 && !checkoutSuccess) {
       e.preventDefault();
@@ -137,6 +141,7 @@
   onMount(async () => {
     await checkSession();
 
+    // Load products in ONE call. No per-product prediction fetching.
     try {
       const [productsRes, customersRes] = await Promise.all([
         API.get("/products/?leaf_only=true"),
@@ -160,6 +165,8 @@
       } catch (err2) {
         console.error("Fallback fetch failed too", err2);
       }
+    } finally {
+      productsLoading = false;
     }
 
     window.addEventListener("popstate", handlePopState);
@@ -173,13 +180,13 @@
     if (typeof window === "undefined") return;
     window.removeEventListener("popstate", handlePopState);
     window.removeEventListener("beforeunload", handleBeforeUnload);
+    if (toastTimer) clearTimeout(toastTimer);
   });
 
   $: filteredProducts = products.filter((p) =>
     p.name.toLowerCase().includes(searchTerm.trim().toLowerCase())
   );
 
-  // ── Customer filtered list ──
   $: useCustomerAutocomplete = customers.length >= AUTOCOMPLETE_THRESHOLD;
 
   $: filteredCustomers = useCustomerAutocomplete
@@ -206,7 +213,6 @@
     customerSearch = "";
   }
 
-  // ── Cart helpers ──
   function cartQtyFor(id) {
     return cart.find((i) => i.id === id)?.qty || 0;
   }
@@ -255,7 +261,6 @@
     cart = cart.filter((item) => item.id !== id);
   }
 
-  // ── Variant picker ──
   async function handleProductClick(product) {
     if (product.is_parent && product.variant_count > 0) {
       openVariantPicker(product);
@@ -295,7 +300,6 @@
     if (viaButton) popModalHistory();
   }
 
-  // ── Totals ──
   $: total = cart.reduce(
     (sum, item) => sum + Number(item.selling_price || 0) * item.qty,
     0
@@ -304,8 +308,8 @@
   $: change = Math.max(0, Number(cashGiven || 0) - total);
   $: shortBy = Math.max(0, total - Number(cashGiven || 0));
   $: cashIsEnough = !isCreditSale && Number(cashGiven || 0) >= total;
+  $: cartCount = cart.reduce((n, i) => n + i.qty, 0);
 
-  // ── Keyboard / scan ──
   function handleScanKeydown(e) {
     if (e.key !== "Enter") return;
     const raw = (e.target.value || "").trim();
@@ -345,7 +349,6 @@
     }
   }
 
-  // ── Checkout ──
   async function checkout() {
     if (cart.length === 0) return;
     if (isCreditSale && !selectedCustomerId) {
@@ -393,10 +396,9 @@
       customerSearch = "";
       cashGiven = 0;
       checkoutSuccess = true;
+      mobileCartOpen = false;
 
       refreshProducts();
-      // Re-check session: if the owner opened one in another tab,
-      // the banner will disappear after the next sale.
       checkSession();
 
       showReceipt = true;
@@ -434,7 +436,6 @@
     if (scanInputEl) scanInputEl.focus();
   }
 
-  // ── Customer ──
   async function createCustomer() {
     if (!newCustomer.name) return;
     try {
@@ -461,7 +462,6 @@
     popModalHistory();
   }
 
-  // ── Cash quick-fill ──
   function quickCash(amount) {
     cashGiven = Number(cashGiven || 0) + amount;
   }
@@ -469,12 +469,21 @@
   function exactCash() {
     cashGiven = total;
   }
+
+  function openMobileCart() {
+    mobileCartOpen = true;
+    pushModalHistory();
+  }
+
+  function closeMobileCart() {
+    mobileCartOpen = false;
+    popModalHistory();
+  }
 </script>
 
 <Layout title="Point of Sale">
   <div class="pos-container">
     <div class="product-section">
-      <!-- Session warning banner -->
       {#if sessionChecked && !sessionActive}
         <div class="session-banner" role="alert">
           <div class="session-banner-icon">
@@ -496,7 +505,6 @@
         </div>
       {/if}
 
-      <!-- Hidden scanner input -->
       <input
         bind:this={scanInputEl}
         class="scan-input"
@@ -530,7 +538,13 @@
         {/if}
       </div>
 
-      {#if filteredProducts.length === 0}
+      {#if productsLoading}
+        <div class="product-grid-skeleton">
+          {#each Array(8) as _}
+            <div class="skeleton-tile"></div>
+          {/each}
+        </div>
+      {:else if filteredProducts.length === 0}
         <div class="empty-products">
           <PackageX size={44} strokeWidth={1.25} />
           <p>No products found</p>
@@ -580,7 +594,8 @@
       {/if}
     </div>
 
-    <div class="cart-section">
+    <!-- Desktop cart -->
+    <div class="cart-section cart-desktop">
       <div class="cart-header">
         <h2>
           <ShoppingCart size={18} strokeWidth={2} />
@@ -624,7 +639,6 @@
 
           {#if isCreditSale}
             {#if useCustomerAutocomplete}
-              <!-- Autocomplete UI -->
               <div class="customer-autocomplete">
                 {#if selectedCustomer}
                   <div class="selected-customer">
@@ -647,7 +661,7 @@
                   <div class="customer-search-wrap">
                     <input
                       type="text"
-                      placeholder="Search customer by name or phone…"
+                      placeholder="Search customer…"
                       bind:value={customerSearch}
                       on:focus={() => (customerDropdownOpen = true)}
                       on:blur={() => setTimeout(() => (customerDropdownOpen = false), 180)}
@@ -685,7 +699,6 @@
                 </button>
               </div>
             {:else}
-              <!-- Plain select for small shops -->
               <div class="customer-selector">
                 <select bind:value={selectedCustomerId}>
                   <option value={null}>-- Select customer --</option>
@@ -775,14 +788,237 @@
     </div>
   </div>
 
-  <!-- Toast -->
+  <!-- Mobile floating "View cart" button -->
+  {#if cart.length > 0 && !mobileCartOpen}
+    <button
+      type="button"
+      class="mobile-cart-fab"
+      on:click={openMobileCart}
+      aria-label="View cart"
+    >
+      <span class="fab-icon">
+        <ShoppingCart size={20} strokeWidth={2} />
+        <span class="fab-badge">{cartCount}</span>
+      </span>
+      <span class="fab-body">
+        <span class="fab-label">{cartCount} item{cartCount === 1 ? "" : "s"}</span>
+        <strong>MWK {total.toLocaleString()}</strong>
+      </span>
+      <ChevronUp size={18} strokeWidth={2} class="fab-chevron" />
+    </button>
+  {/if}
+
+  <!-- Mobile cart sheet -->
+  {#if mobileCartOpen}
+    <div
+      class="mobile-cart-backdrop"
+      role="presentation"
+      on:click={closeMobileCart}
+      on:keydown={(e) => e.key === "Escape" && closeMobileCart()}
+    ></div>
+    <div class="mobile-cart-sheet" role="dialog" aria-modal="true">
+      <div class="sheet-handle-row">
+        <span class="sheet-handle"></span>
+      </div>
+      <div class="cart-header">
+        <h2>
+          <ShoppingCart size={18} strokeWidth={2} />
+          Current Sale
+        </h2>
+        <button
+          class="close-btn"
+          on:click={closeMobileCart}
+          type="button"
+          aria-label="Close cart"
+        >
+          <X size={20} strokeWidth={2} />
+        </button>
+      </div>
+
+      {#if cart.length === 0}
+        <div class="empty-cart">
+          <ShoppingCart size={40} strokeWidth={1.25} />
+          <p>Cart is empty</p>
+        </div>
+      {:else}
+        <div class="cart-items mobile-cart-items">
+          {#each cart as item (item.id)}
+            <CartItem
+              {item}
+              on:update={(e) => updateQty(item.id, e.detail.qty)}
+              on:remove={() => removeFromCart(item.id)}
+            />
+          {/each}
+        </div>
+      {/if}
+
+      <div class="cart-footer">
+        <div class="cart-total">
+          <span>Total</span>
+          <strong>MWK {total.toLocaleString()}</strong>
+        </div>
+
+        <div class="credit-section">
+          <label class="credit-toggle">
+            <input type="checkbox" bind:checked={isCreditSale} />
+            <span>
+              <CreditCard size={14} strokeWidth={2} /> Credit sale (loan)
+            </span>
+          </label>
+
+          {#if isCreditSale}
+            {#if useCustomerAutocomplete}
+              <div class="customer-autocomplete">
+                {#if selectedCustomer}
+                  <div class="selected-customer">
+                    <div class="selected-customer-info">
+                      <strong>{selectedCustomer.name}</strong>
+                      {#if selectedCustomer.phone}
+                        <span class="selected-customer-phone">{selectedCustomer.phone}</span>
+                      {/if}
+                    </div>
+                    <button
+                      type="button"
+                      class="selected-customer-clear"
+                      on:click={clearCustomer}
+                      aria-label="Clear customer"
+                    >
+                      <X size={14} strokeWidth={2} />
+                    </button>
+                  </div>
+                {:else}
+                  <div class="customer-search-wrap">
+                    <input
+                      type="text"
+                      placeholder="Search customer…"
+                      bind:value={customerSearch}
+                      on:focus={() => (customerDropdownOpen = true)}
+                      on:blur={() => setTimeout(() => (customerDropdownOpen = false), 180)}
+                      autocomplete="off"
+                    />
+                    {#if customerDropdownOpen}
+                      <div class="customer-dropdown">
+                        {#if filteredCustomers.length === 0}
+                          <div class="customer-empty">No matches</div>
+                        {:else}
+                          {#each filteredCustomers.slice(0, 20) as c}
+                            <button
+                              type="button"
+                              class="customer-option"
+                              on:click={() => selectCustomer(c)}
+                            >
+                              <span class="customer-opt-name">{c.name}</span>
+                              {#if c.phone}
+                                <span class="customer-opt-phone">{c.phone}</span>
+                              {/if}
+                            </button>
+                          {/each}
+                        {/if}
+                      </div>
+                    {/if}
+                  </div>
+                {/if}
+                <button
+                  class="btn btn-sm btn-outline"
+                  on:click={openCustomerModal}
+                  type="button"
+                >
+                  <UserPlus size={14} strokeWidth={2} />
+                  <span>New</span>
+                </button>
+              </div>
+            {:else}
+              <div class="customer-selector">
+                <select bind:value={selectedCustomerId}>
+                  <option value={null}>-- Select customer --</option>
+                  {#each customers as c}
+                    <option value={c.id}>
+                      {c.name}{c.phone ? ` (${c.phone})` : ""}
+                    </option>
+                  {/each}
+                </select>
+                <button
+                  class="btn btn-sm btn-outline"
+                  on:click={openCustomerModal}
+                  type="button"
+                >
+                  <UserPlus size={14} strokeWidth={2} />
+                  <span>New</span>
+                </button>
+              </div>
+            {/if}
+          {:else}
+            <div class="cash-block">
+              <div class="cash-label">
+                <Wallet size={14} strokeWidth={2} />
+                <span>Cash given</span>
+              </div>
+              <div class="cash-input-row">
+                <input
+                  type="number"
+                  min="0"
+                  step="100"
+                  bind:value={cashGiven}
+                  placeholder="0"
+                />
+                <button
+                  class="quick-cash-btn"
+                  type="button"
+                  on:click={exactCash}
+                  title="Exact amount"
+                >
+                  Exact
+                </button>
+              </div>
+              <div class="cash-quick-btns">
+                <button type="button" on:click={() => quickCash(500)}>+500</button>
+                <button type="button" on:click={() => quickCash(1000)}>+1k</button>
+                <button type="button" on:click={() => quickCash(2000)}>+2k</button>
+                <button type="button" on:click={() => quickCash(5000)}>+5k</button>
+              </div>
+
+              {#if Number(cashGiven) > 0}
+                <div class="cash-result {cashIsEnough ? 'ok' : 'short'}">
+                  {#if cashIsEnough}
+                    <span>Change</span>
+                    <strong>MWK {change.toLocaleString()}</strong>
+                  {:else}
+                    <span>Short by</span>
+                    <strong>MWK {shortBy.toLocaleString()}</strong>
+                  {/if}
+                </div>
+              {/if}
+            </div>
+          {/if}
+        </div>
+
+        <button
+          class="checkout-btn"
+          class:success={checkoutSuccess}
+          on:click={checkoutSuccess ? startNewSale : checkout}
+          disabled={loading ||
+            (cart.length === 0 && !checkoutSuccess) ||
+            (Number(cashGiven) > 0 && !cashIsEnough && !isCreditSale && cart.length > 0)}
+          type="button"
+        >
+          {#if checkoutSuccess}
+            <CheckCircle2 size={18} strokeWidth={2} /> Sale completed — New Sale
+          {:else if loading}
+            <span class="spinner"></span> Processing…
+          {:else}
+            <ShoppingCart size={18} strokeWidth={2} /> Complete Sale — MWK {total.toLocaleString()}
+          {/if}
+        </button>
+      </div>
+    </div>
+  {/if}
+
   {#if toast.visible}
     <div class="toast toast-{toast.kind}" role="status">
       {toast.text}
     </div>
   {/if}
 
-  <!-- VARIANT PICKER -->
   {#if showVariantPicker}
     <div
       class="modal-overlay"
@@ -835,7 +1071,6 @@
     </div>
   {/if}
 
-  <!-- NEW CUSTOMER -->
   {#if showNewCustomerModal}
     <div
       class="modal-overlay"
@@ -880,7 +1115,6 @@
     </div>
   {/if}
 
-  <!-- RECEIPT -->
   {#if showReceipt && pendingReceipt}
     <Receipt
       sale={pendingReceipt.sale}
@@ -906,12 +1140,7 @@
     margin-bottom: 0.9rem;
     flex-wrap: wrap;
   }
-  .session-banner-icon {
-    color: #b45309;
-    flex-shrink: 0;
-    display: flex;
-    align-items: center;
-  }
+  .session-banner-icon { color: #b45309; flex-shrink: 0; display: flex; align-items: center; }
   .session-banner-body {
     flex: 1;
     min-width: 0;
@@ -920,14 +1149,8 @@
     gap: 0.1rem;
     font-size: 0.85rem;
   }
-  .session-banner-body strong {
-    color: #92400e;
-    font-weight: 600;
-  }
-  .session-banner-body span {
-    color: #78350f;
-    font-size: 0.78rem;
-  }
+  .session-banner-body strong { color: #92400e; font-weight: 600; }
+  .session-banner-body span { color: #78350f; font-size: 0.78rem; }
   .session-banner-cta {
     border: none;
     background: #d97706;
@@ -939,11 +1162,8 @@
     cursor: pointer;
     white-space: nowrap;
   }
-  .session-banner-cta:hover {
-    background: #b45309;
-  }
+  .session-banner-cta:hover { background: #b45309; }
 
-  /* ── Hidden scanner input ── */
   .scan-input {
     position: absolute;
     left: -9999px;
@@ -954,6 +1174,7 @@
     pointer-events: none;
   }
 
+  /* ── Grid ── */
   .pos-container {
     display: grid;
     grid-template-columns: 1fr 380px;
@@ -967,6 +1188,7 @@
     flex-direction: column;
     overflow: hidden;
     min-width: 0;
+    min-height: 0;
   }
 
   .search-bar {
@@ -974,7 +1196,6 @@
     margin-bottom: 1rem;
     flex-shrink: 0;
   }
-
   .search-icon-wrap {
     position: absolute;
     left: 1rem;
@@ -985,7 +1206,6 @@
     display: inline-flex;
     align-items: center;
   }
-
   .search-bar input {
     width: 100%;
     padding: 0.75rem 2.5rem 0.75rem 2.75rem;
@@ -996,13 +1216,11 @@
     box-sizing: border-box;
     color: var(--text, #111827);
   }
-
   .search-bar input:focus {
     outline: none;
     border-color: var(--primary, #0f6b3e);
     box-shadow: 0 0 0 3px rgba(15, 107, 62, 0.1);
   }
-
   .search-clear {
     position: absolute;
     right: 0.65rem;
@@ -1028,6 +1246,27 @@
     overflow-y: auto;
     padding-right: 0.35rem;
     overscroll-behavior: contain;
+    flex: 1;
+    min-height: 0;
+    align-content: start;
+  }
+
+  /* Skeleton for loading state */
+  .product-grid-skeleton {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 0.75rem;
+    flex: 1;
+  }
+  .skeleton-tile {
+    min-height: 96px;
+    border-radius: 10px;
+    background: var(--background, #f3f4f6);
+    animation: skeletonPulse 1.4s infinite;
+  }
+  @keyframes skeletonPulse {
+    0%, 100% { opacity: 0.5; }
+    50% { opacity: 0.85; }
   }
 
   .product-card {
@@ -1045,26 +1284,17 @@
     flex-direction: column;
     gap: 0.35rem;
   }
-
   .product-card:hover:not(:disabled) {
     border-color: var(--primary, #0f6b3e);
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
     transform: translateY(-1px);
   }
-
   .product-card.in-cart {
     border-color: var(--primary, #0f6b3e);
     background: #f0fdf4;
   }
-
-  .parent-card {
-    border-left: 3px solid var(--primary, #0f6b3e);
-  }
-
-  .out-of-stock {
-    opacity: 0.55;
-    cursor: not-allowed;
-  }
+  .parent-card { border-left: 3px solid var(--primary, #0f6b3e); }
+  .out-of-stock { opacity: 0.55; cursor: not-allowed; }
 
   .in-cart-badge {
     position: absolute;
@@ -1094,19 +1324,13 @@
     gap: 0.3rem;
     overflow: hidden;
   }
-
-  .layer-icon {
-    color: var(--primary, #0f6b3e);
-    flex-shrink: 0;
-  }
-
+  .layer-icon { color: var(--primary, #0f6b3e); flex-shrink: 0; }
   .product-price {
     color: var(--primary, #0f6b3e);
     font-weight: 700;
     font-size: 0.9rem;
     margin-top: auto;
   }
-
   .product-stock {
     font-size: 0.72rem;
     color: var(--text-light, #6b7280);
@@ -1120,9 +1344,10 @@
     padding: 3rem 1rem;
     color: var(--text-light, #6b7280);
     gap: 0.75rem;
+    flex: 1;
   }
 
-  /* ── Cart ── */
+  /* ── Cart (desktop) ── */
   .cart-section {
     display: flex;
     flex-direction: column;
@@ -1134,6 +1359,7 @@
     min-width: 0;
     min-height: 0;
   }
+  .cart-desktop { display: flex; }
 
   .cart-header {
     flex-shrink: 0;
@@ -1143,7 +1369,6 @@
     align-items: baseline;
     gap: 0.5rem;
   }
-
   .cart-header h2 {
     display: flex;
     align-items: center;
@@ -1153,20 +1378,20 @@
     margin: 0;
     color: var(--text, #111827);
   }
-
   .cart-count {
     font-size: 0.72rem;
     color: var(--text-light, #6b7280);
     font-weight: 500;
   }
 
+  /* The important line — cart items scroll internally */
   .cart-items {
-    flex: 1;
+    flex: 1 1 auto;
     overflow-y: auto;
     margin: 0.5rem 0;
     padding-right: 0.25rem;
     overscroll-behavior: contain;
-    min-height: 0;
+    min-height: 80px;
   }
 
   .empty-cart {
@@ -1197,13 +1422,11 @@
     font-size: 1rem;
     color: var(--text-light, #6b7280);
   }
-
   .cart-total strong {
     color: var(--primary, #0f6b3e);
     font-size: 1.4rem;
     font-weight: 700;
   }
-
   .empty-hint {
     margin: 0;
     text-align: center;
@@ -1217,7 +1440,6 @@
     background: var(--background, #f9fafb);
     border-radius: 10px;
   }
-
   .credit-toggle {
     display: flex;
     align-items: center;
@@ -1227,25 +1449,18 @@
     font-weight: 500;
     color: var(--text, #111827);
   }
-
   .credit-toggle input {
     width: auto;
     cursor: pointer;
     accent-color: var(--primary, #0f6b3e);
   }
-
   .credit-toggle span {
     display: inline-flex;
     align-items: center;
     gap: 0.3rem;
   }
 
-  .customer-selector {
-    display: flex;
-    gap: 0.4rem;
-    margin-top: 0.55rem;
-  }
-
+  .customer-selector { display: flex; gap: 0.4rem; margin-top: 0.55rem; }
   .customer-selector select {
     flex: 1;
     padding: 0.5rem;
@@ -1257,14 +1472,12 @@
     min-width: 0;
   }
 
-  /* ── Customer autocomplete ── */
   .customer-autocomplete {
     display: flex;
     gap: 0.4rem;
     margin-top: 0.55rem;
     align-items: flex-start;
   }
-
   .selected-customer {
     flex: 1;
     display: flex;
@@ -1277,14 +1490,12 @@
     border-radius: 8px;
     min-width: 0;
   }
-
   .selected-customer-info {
     display: flex;
     flex-direction: column;
     min-width: 0;
     gap: 0.1rem;
   }
-
   .selected-customer-info strong {
     font-size: 0.85rem;
     color: #3730a3;
@@ -1292,12 +1503,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-
-  .selected-customer-phone {
-    font-size: 0.72rem;
-    color: #4f46e5;
-  }
-
+  .selected-customer-phone { font-size: 0.72rem; color: #4f46e5; }
   .selected-customer-clear {
     border: none;
     background: transparent;
@@ -1308,16 +1514,9 @@
     line-height: 0;
     flex-shrink: 0;
   }
-  .selected-customer-clear:hover {
-    background: #e0e7ff;
-  }
+  .selected-customer-clear:hover { background: #e0e7ff; }
 
-  .customer-search-wrap {
-    position: relative;
-    flex: 1;
-    min-width: 0;
-  }
-
+  .customer-search-wrap { position: relative; flex: 1; min-width: 0; }
   .customer-search-wrap input {
     width: 100%;
     padding: 0.5rem 0.65rem;
@@ -1328,7 +1527,6 @@
     font-size: 0.85rem;
     box-sizing: border-box;
   }
-
   .customer-search-wrap input:focus {
     outline: none;
     border-color: var(--primary, #0f6b3e);
@@ -1348,7 +1546,6 @@
     overflow-y: auto;
     z-index: 50;
   }
-
   .customer-option {
     display: flex;
     flex-direction: column;
@@ -1362,21 +1559,10 @@
     cursor: pointer;
     font-size: 0.85rem;
   }
-  .customer-option:last-child {
-    border-bottom: none;
-  }
-  .customer-option:hover {
-    background: var(--background, #f9fafb);
-  }
-  .customer-opt-name {
-    font-weight: 500;
-    color: var(--text, #111827);
-  }
-  .customer-opt-phone {
-    font-size: 0.72rem;
-    color: var(--text-light, #6b7280);
-  }
-
+  .customer-option:last-child { border-bottom: none; }
+  .customer-option:hover { background: var(--background, #f9fafb); }
+  .customer-opt-name { font-weight: 500; color: var(--text, #111827); }
+  .customer-opt-phone { font-size: 0.72rem; color: var(--text-light, #6b7280); }
   .customer-empty {
     padding: 0.65rem 0.7rem;
     text-align: center;
@@ -1384,13 +1570,7 @@
     color: var(--text-light, #6b7280);
   }
 
-  .cash-block {
-    margin-top: 0.65rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.4rem;
-  }
-
+  .cash-block { margin-top: 0.65rem; display: flex; flex-direction: column; gap: 0.4rem; }
   .cash-label {
     display: flex;
     align-items: center;
@@ -1399,12 +1579,7 @@
     font-weight: 500;
     color: var(--text-light, #6b7280);
   }
-
-  .cash-input-row {
-    display: flex;
-    gap: 0.4rem;
-  }
-
+  .cash-input-row { display: flex; gap: 0.4rem; }
   .cash-input-row input {
     flex: 1;
     padding: 0.55rem 0.7rem;
@@ -1417,13 +1592,11 @@
     box-sizing: border-box;
     min-width: 0;
   }
-
   .cash-input-row input:focus {
     outline: none;
     border-color: var(--primary, #0f6b3e);
     box-shadow: 0 0 0 3px rgba(15, 107, 62, 0.1);
   }
-
   .quick-cash-btn {
     padding: 0 0.75rem;
     border: 1px solid var(--primary, #0f6b3e);
@@ -1435,18 +1608,9 @@
     cursor: pointer;
     white-space: nowrap;
   }
+  .quick-cash-btn:hover { background: var(--primary, #0f6b3e); color: white; }
 
-  .quick-cash-btn:hover {
-    background: var(--primary, #0f6b3e);
-    color: white;
-  }
-
-  .cash-quick-btns {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 0.3rem;
-  }
-
+  .cash-quick-btns { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.3rem; }
   .cash-quick-btns button {
     padding: 0.4rem;
     border: 1px solid var(--border, #e5e7eb);
@@ -1457,7 +1621,6 @@
     font-weight: 600;
     cursor: pointer;
   }
-
   .cash-quick-btns button:hover {
     border-color: var(--primary, #0f6b3e);
     color: var(--primary, #0f6b3e);
@@ -1471,23 +1634,9 @@
     border-radius: 8px;
     font-size: 0.85rem;
   }
-
-  .cash-result.ok {
-    background: #f0fdf4;
-    color: #166534;
-    border: 1px solid #86efac;
-  }
-
-  .cash-result.short {
-    background: #fef2f2;
-    color: #b91c1c;
-    border: 1px solid #fecaca;
-  }
-
-  .cash-result strong {
-    font-size: 1rem;
-    font-weight: 700;
-  }
+  .cash-result.ok { background: #f0fdf4; color: #166534; border: 1px solid #86efac; }
+  .cash-result.short { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
+  .cash-result strong { font-size: 1rem; font-weight: 700; }
 
   .checkout-btn {
     width: 100%;
@@ -1505,19 +1654,9 @@
     cursor: pointer;
     transition: all 0.15s;
   }
-
-  .checkout-btn:hover:not(:disabled) {
-    background: var(--primary-dark, #0a4f2e);
-  }
-
-  .checkout-btn:disabled {
-    opacity: 0.55;
-    cursor: not-allowed;
-  }
-
-  .checkout-btn.success {
-    background: #16a34a;
-  }
+  .checkout-btn:hover:not(:disabled) { background: var(--primary-dark, #0a4f2e); }
+  .checkout-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+  .checkout-btn.success { background: #16a34a; }
 
   .spinner {
     width: 16px;
@@ -1527,12 +1666,7 @@
     border-radius: 50%;
     animation: spin 0.7s linear infinite;
   }
-
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
+  @keyframes spin { to { transform: rotate(360deg); } }
 
   /* ── Toast ── */
   .toast {
@@ -1549,25 +1683,10 @@
     max-width: 90vw;
     text-align: center;
   }
-  .toast-info {
-    background: #111827;
-    color: #fff;
-  }
-  .toast-warn {
-    background: #fef3c7;
-    color: #92400e;
-    border: 1px solid #fcd34d;
-  }
-  .toast-error {
-    background: #fee2e2;
-    color: #991b1b;
-    border: 1px solid #fecaca;
-  }
-  .toast-success {
-    background: #dcfce7;
-    color: #166534;
-    border: 1px solid #86efac;
-  }
+  .toast-info { background: #111827; color: #fff; }
+  .toast-warn { background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; }
+  .toast-error { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+  .toast-success { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
 
   /* ── Modals ── */
   .modal-overlay {
@@ -1580,7 +1699,6 @@
     z-index: 1000;
     padding: 1rem;
   }
-
   .modal {
     background: var(--surface, #fff);
     border-radius: 12px;
@@ -1590,7 +1708,6 @@
     max-height: 90vh;
     overflow-y: auto;
   }
-
   .modal h3 {
     display: flex;
     align-items: center;
@@ -1600,21 +1717,13 @@
     font-size: 1.05rem;
     color: var(--text, #111827);
   }
-
   .picker-hint {
     text-align: center;
     color: var(--text-light, #6b7280);
     padding: 1.5rem;
     font-size: 0.9rem;
   }
-
-  .variant-options {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-    margin-bottom: 1rem;
-  }
-
+  .variant-options { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 1rem; }
   .variant-option {
     display: flex;
     justify-content: space-between;
@@ -1629,47 +1738,14 @@
     width: 100%;
     gap: 1rem;
   }
+  .variant-option:hover { border-color: var(--primary, #0f6b3e); background: var(--surface, #fff); }
+  .variant-info { flex: 1; }
+  .variant-name { font-weight: 600; font-size: 0.95rem; color: var(--text, #111827); }
+  .variant-meta { font-size: 0.78rem; color: var(--text-light, #6b7280); margin-top: 0.15rem; }
+  .variant-price { font-weight: 700; color: var(--primary, #0f6b3e); font-size: 0.95rem; flex-shrink: 0; }
 
-  .variant-option:hover {
-    border-color: var(--primary, #0f6b3e);
-    background: var(--surface, #fff);
-  }
-
-  .variant-info {
-    flex: 1;
-  }
-
-  .variant-name {
-    font-weight: 600;
-    font-size: 0.95rem;
-    color: var(--text, #111827);
-  }
-
-  .variant-meta {
-    font-size: 0.78rem;
-    color: var(--text-light, #6b7280);
-    margin-top: 0.15rem;
-  }
-
-  .variant-price {
-    font-weight: 700;
-    color: var(--primary, #0f6b3e);
-    font-size: 0.95rem;
-    flex-shrink: 0;
-  }
-
-  .form-group {
-    margin-bottom: 0.85rem;
-  }
-
-  label {
-    display: block;
-    margin-bottom: 0.3rem;
-    font-weight: 500;
-    font-size: 0.88rem;
-    color: var(--text, #111827);
-  }
-
+  .form-group { margin-bottom: 0.85rem; }
+  label { display: block; margin-bottom: 0.3rem; font-weight: 500; font-size: 0.88rem; color: var(--text, #111827); }
   input {
     width: 100%;
     padding: 0.6rem;
@@ -1680,19 +1756,12 @@
     background: var(--surface, #fff);
     color: var(--text, #111827);
   }
-
   input:focus {
     outline: none;
     border-color: var(--primary, #0f6b3e);
     box-shadow: 0 0 0 3px rgba(15, 107, 62, 0.1);
   }
-
-  .modal-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 0.6rem;
-    margin-top: 1.25rem;
-  }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 0.6rem; margin-top: 1.25rem; }
 
   .btn {
     display: inline-flex;
@@ -1705,41 +1774,31 @@
     font-weight: 500;
     font-size: 0.9rem;
   }
-
-  .btn-primary {
-    background: var(--primary, #0f6b3e);
-    color: white;
-  }
-
-  .btn-primary:hover:not(:disabled) {
-    background: var(--primary-dark, #0a4f2e);
-  }
-
-  .btn-primary:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
+  .btn-primary { background: var(--primary, #0f6b3e); color: white; }
+  .btn-primary:hover:not(:disabled) { background: var(--primary-dark, #0a4f2e); }
+  .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
   .btn-secondary {
     background: var(--surface, #fff);
     border: 1px solid var(--border, #e5e7eb);
     color: var(--text, #111827);
   }
-
   .btn-outline {
     background: transparent;
     border: 1px solid var(--border, #e5e7eb);
     color: var(--text, #111827);
   }
+  .btn-outline:hover { border-color: var(--primary, #0f6b3e); color: var(--primary, #0f6b3e); }
+  .btn-sm { padding: 0.45rem 0.75rem; font-size: 0.85rem; }
 
-  .btn-outline:hover {
-    border-color: var(--primary, #0f6b3e);
-    color: var(--primary, #0f6b3e);
+  /* ── Mobile cart FAB + sheet ── */
+  .mobile-cart-fab {
+    display: none;
   }
-
-  .btn-sm {
-    padding: 0.45rem 0.75rem;
-    font-size: 0.85rem;
+  .mobile-cart-backdrop {
+    display: none;
+  }
+  .mobile-cart-sheet {
+    display: none;
   }
 
   /* ── Responsive ── */
@@ -1753,29 +1812,138 @@
     .pos-container {
       grid-template-columns: 1fr;
       height: auto;
+      min-height: calc(100dvh - var(--topbar-height, 64px) - 3rem);
       gap: 1rem;
     }
 
+    /* Hide the desktop cart on mobile */
+    .cart-desktop {
+      display: none;
+    }
+
     .product-grid {
-      max-height: 340px;
-    }
-
-    .cart-section {
-      min-height: 380px;
       max-height: none;
-      overflow: visible;
     }
 
-    .cart-items {
-      max-height: 240px;
+    /* Floating cart button */
+    .mobile-cart-fab {
+      display: flex;
+      position: fixed;
+      bottom: 1rem;
+      left: 1rem;
+      right: 1rem;
+      align-items: center;
+      gap: 0.6rem;
+      padding: 0.75rem 1rem;
+      background: var(--primary, #0f6b3e);
+      color: white;
+      border: none;
+      border-radius: 14px;
+      box-shadow: 0 10px 25px -8px rgba(15, 107, 62, 0.5);
+      cursor: pointer;
+      z-index: 900;
+      transition: transform 0.15s;
     }
+    .mobile-cart-fab:hover { transform: translateY(-1px); }
+    .fab-icon {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 40px;
+      height: 40px;
+      background: rgba(255, 255, 255, 0.15);
+      border-radius: 10px;
+      flex-shrink: 0;
+    }
+    .fab-badge {
+      position: absolute;
+      top: -4px;
+      right: -4px;
+      background: #f59e0b;
+      color: #111827;
+      font-size: 0.7rem;
+      font-weight: 800;
+      min-width: 20px;
+      height: 20px;
+      border-radius: 10px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 0.35rem;
+      box-shadow: 0 0 0 2px var(--primary, #0f6b3e);
+    }
+    .fab-body {
+      flex: 1;
+      text-align: left;
+      display: flex;
+      flex-direction: column;
+      gap: 0.05rem;
+    }
+    .fab-label {
+      font-size: 0.72rem;
+      font-weight: 500;
+      opacity: 0.85;
+    }
+    .fab-body strong {
+      font-size: 1.05rem;
+      font-weight: 700;
+    }
+    .fab-chevron { opacity: 0.85; }
 
-    .cart-footer {
-      position: sticky;
+    /* Mobile cart sheet */
+    .mobile-cart-backdrop {
+      display: block;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 1000;
+    }
+    .mobile-cart-sheet {
+      display: flex;
+      flex-direction: column;
+      position: fixed;
+      left: 0;
+      right: 0;
       bottom: 0;
+      max-height: 90dvh;
       background: var(--surface, #fff);
-      padding-top: 0.5rem;
-      z-index: 5;
+      border-radius: 20px 20px 0 0;
+      padding: 0.5rem 1rem 1rem;
+      z-index: 1001;
+      box-shadow: 0 -8px 25px rgba(0, 0, 0, 0.2);
+      animation: sheetUp 0.2s ease-out;
+    }
+    @keyframes sheetUp {
+      from { transform: translateY(100%); }
+      to { transform: translateY(0); }
+    }
+    .sheet-handle-row {
+      display: flex;
+      justify-content: center;
+      padding: 0.35rem 0 0.65rem;
+      flex-shrink: 0;
+    }
+    .sheet-handle {
+      width: 40px;
+      height: 4px;
+      background: var(--border, #d1d5db);
+      border-radius: 2px;
+    }
+    .close-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 0.35rem;
+      border-radius: 6px;
+      color: var(--text-light, #6b7280);
+      line-height: 0;
+    }
+    .close-btn:hover { background: var(--background, #f9fafb); }
+    .mobile-cart-items {
+      flex: 1 1 auto;
+      overflow-y: auto;
+      min-height: 100px;
     }
   }
 
@@ -1783,40 +1951,17 @@
     .product-grid {
       grid-template-columns: repeat(2, 1fr);
       gap: 0.5rem;
-      max-height: 300px;
     }
-
     .product-card {
       padding: 0.65rem;
       min-height: 84px;
     }
-
-    .product-name {
-      font-size: 0.8rem;
-    }
-
-    .product-price {
-      font-size: 0.82rem;
-    }
-
-    .cart-total strong {
-      font-size: 1.15rem;
-    }
-
-    .cash-quick-btns button {
-      font-size: 0.7rem;
-      padding: 0.35rem;
-    }
-
-    .session-banner {
-      padding: 0.6rem 0.75rem;
-    }
-    .session-banner-body {
-      font-size: 0.8rem;
-    }
-    .session-banner-cta {
-      width: 100%;
-      text-align: center;
-    }
+    .product-name { font-size: 0.8rem; }
+    .product-price { font-size: 0.82rem; }
+    .cart-total strong { font-size: 1.15rem; }
+    .cash-quick-btns button { font-size: 0.7rem; padding: 0.35rem; }
+    .session-banner { padding: 0.6rem 0.75rem; }
+    .session-banner-body { font-size: 0.8rem; }
+    .session-banner-cta { width: 100%; text-align: center; }
   }
 </style>

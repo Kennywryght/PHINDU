@@ -54,16 +54,12 @@ class ExpenseOut(BaseModel):
         return dt.isoformat() if dt else None
 
 
-# ─── Create ───────────────────────────────────────────────────────
-
-
 @router.post("/", response_model=ExpenseOut)
 def create_expense(
     data: ExpenseCreate,
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """Record a new expense. Any authenticated user can add."""
     active_session = (
         db.query(SessionModel)
         .filter(
@@ -87,18 +83,11 @@ def create_expense(
     return expense
 
 
-# ─── Summary (must come before /{id} to avoid route conflict) ────
-
-
 @router.get("/summary")
 def expenses_summary(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """
-    Aggregate expense metrics: total, today, this week, this month,
-    count, and top categories by total amount.
-    """
     now = datetime.utcnow()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     week_start = today_start - timedelta(days=6)
@@ -125,7 +114,6 @@ def expenses_summary(
         or 0
     )
 
-    # Top categories (for the "where does money go" widget)
     cat_rows = (
         db.query(Expense.category, func.sum(Expense.amount).label("total"))
         .filter(Expense.shop_id == shop_id)
@@ -149,24 +137,16 @@ def expenses_summary(
     }
 
 
-# ─── List with filters ────────────────────────────────────────────
-
-
 @router.get("/", response_model=dict)
 def get_expenses(
-    q: str | None = Query(None, description="Search name or category"),
-    category: str | None = Query(None, description="Exact category match"),
-    days: int | None = Query(None, ge=1, le=365, description="Last N days"),
+    q: str | None = Query(None),
+    category: str | None = Query(None),
+    days: int | None = Query(None, ge=1, le=365),
     limit: int = Query(20, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """
-    Paginated, filterable list of expenses.
-
-    Response: { items: [...], total: int, has_more: bool }
-    """
     base = db.query(Expense).filter(Expense.shop_id == shop_id)
 
     if days is not None:
@@ -174,7 +154,7 @@ def get_expenses(
         base = base.filter(Expense.created_at >= cutoff)
 
     if category:
-        base = base.filter(Expense.category == category)
+        base = base.filter(func.lower(Expense.category) == category.strip().lower())
 
     if q:
         like = f"%{q.strip()}%"
@@ -208,15 +188,11 @@ def get_expenses(
     }
 
 
-# ─── Categories list (for filter dropdown) ───────────────────────
-
-
 @router.get("/categories")
 def list_categories(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """Distinct expense categories used in this shop."""
     rows = (
         db.query(Expense.category, func.count(Expense.id).label("count"))
         .filter(
@@ -233,9 +209,6 @@ def list_categories(
         for r in rows
         if r.category
     ]
-
-
-# ─── Update / Delete (manager+) ──────────────────────────────────
 
 
 @router.put(
@@ -287,9 +260,6 @@ def delete_expense(
     db.delete(expense)
     db.commit()
     return {"message": "Expense deleted"}
-
-
-# ─── Single get (for edit modal prefill) ─────────────────────────
 
 
 @router.get("/{expense_id}", response_model=ExpenseOut)

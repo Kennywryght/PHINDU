@@ -10,15 +10,57 @@
   let loading = true;
   let error = null;
 
+  function extractItems(payload) {
+    if (Array.isArray(payload)) return payload;
+    if (payload && Array.isArray(payload.items)) return payload.items;
+    return [];
+  }
+
   onMount(async () => {
+    let timedOut = false;
+    const timeoutId = setTimeout(() => {
+      if (loading) {
+        timedOut = true;
+        loading = false;
+        error = "Request timed out. Please try again.";
+      }
+    }, 15000);
+
     try {
       const res = await API.get("/expenses/", {
-        params: { category, limit: 200 },
+        params: {
+          category: category && category !== "Uncategorized" ? category : undefined,
+          limit: 200,
+        },
       });
-      expenses = res.data || [];
+
+      let data = extractItems(res.data);
+
+      if (data.length === 0) {
+        const all = await API.get("/expenses/", { params: { limit: 500 } });
+        const allItems = extractItems(all.data);
+        if (!category || category === "Uncategorized") {
+          data = allItems.filter((e) => !e.category);
+        } else {
+          const needle = category.toLowerCase();
+          data = allItems.filter(
+            (e) => (e.category || "").toLowerCase() === needle
+          );
+        }
+      }
+
+      if (!timedOut) expenses = data;
     } catch (err) {
-      error = err.response?.data?.detail || "Failed to load expenses";
+      if (timedOut) return;
+      const d = err?.response?.data?.detail;
+      if (Array.isArray(d)) {
+        error = d.map((x) => x.msg || JSON.stringify(x)).join("; ");
+      } else {
+        error = d || err?.message || "Failed to load expenses";
+      }
+      console.error("Expense drilldown failed:", err);
     } finally {
+      clearTimeout(timeoutId);
       loading = false;
     }
   });
@@ -32,9 +74,7 @@
   }
 
   function fmt(n) {
-    return Number(n || 0).toLocaleString(undefined, {
-      maximumFractionDigits: 2,
-    });
+    return Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
   }
 
   function fmtDate(iso) {
@@ -48,7 +88,10 @@
     });
   }
 
-  $: total = expenses.reduce((s, e) => s + Number(e.amount || 0), 0);
+  $: total = (Array.isArray(expenses) ? expenses : []).reduce(
+    (s, e) => s + Number(e.amount || 0),
+    0
+  );
 </script>
 
 <svelte:window on:keydown={handleKeydown} />
@@ -126,7 +169,6 @@
     z-index: 1000;
     padding: 1rem;
   }
-
   .modal {
     background: var(--surface, #fff);
     border-radius: 12px;
@@ -138,7 +180,6 @@
     display: flex;
     flex-direction: column;
   }
-
   .modal-header {
     display: flex;
     justify-content: space-between;
@@ -170,10 +211,7 @@
     line-height: 0;
     flex-shrink: 0;
   }
-  .close-btn:hover {
-    background: var(--background, #f9fafb);
-  }
-
+  .close-btn:hover { background: var(--background, #f9fafb); }
   .state-box {
     display: flex;
     align-items: center;
@@ -184,18 +222,9 @@
     font-size: 0.88rem;
     text-align: center;
   }
-  .state-box.error {
-    color: var(--danger, #dc2626);
-  }
-  .spin {
-    animation: spin 1s linear infinite;
-  }
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
+  .state-box.error { color: var(--danger, #dc2626); }
+  .spin { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .expense-list {
     display: flex;
     flex-direction: column;
@@ -237,7 +266,6 @@
     font-size: 0.9rem;
     white-space: nowrap;
   }
-
   .expense-total-row {
     display: flex;
     justify-content: space-between;
@@ -250,11 +278,7 @@
     font-size: 0.9rem;
     color: #166534;
   }
-  .expense-total-row strong {
-    font-size: 1.05rem;
-    font-weight: 700;
-  }
-
+  .expense-total-row strong { font-size: 1.05rem; font-weight: 700; }
   .modal-actions {
     display: flex;
     justify-content: flex-end;
@@ -277,7 +301,5 @@
     border: 1px solid var(--border, #e5e7eb);
     color: var(--text, #111827);
   }
-  .btn-secondary:hover {
-    background: var(--background, #f9fafb);
-  }
+  .btn-secondary:hover { background: var(--background, #f9fafb); }
 </style>

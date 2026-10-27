@@ -1,6 +1,19 @@
 <script>
   import { onMount, onDestroy } from "svelte";
-  import { Plus, X, Trash2, AlertTriangle, UserPlus, Eye, ChevronDown, ChevronUp, Loader2 } from "lucide-svelte";
+  import {
+    Plus,
+    X,
+    Trash2,
+    AlertTriangle,
+    UserPlus,
+    Eye,
+    ChevronDown,
+    ChevronUp,
+    Loader2,
+    ShoppingBag,
+    Sparkles,
+    TrendingUp,
+  } from "lucide-svelte";
   import { user as userStore } from "../stores/auth";
   import Layout from "../components/Layout.svelte";
   import Receipt from "../components/Receipt.svelte";
@@ -16,8 +29,8 @@
   const PAGE_SIZE = 50;
 
   // Filters
-  let filterStatus = "all"; // all | paid | unpaid | voided
-  let dateRange = "all";    // all | today | 7d | 30d
+  let filterStatus = "all";
+  let dateRange = "all";
   let searchQuery = "";
 
   // New sale form
@@ -42,6 +55,9 @@
 
   // Expanded sale rows (desktop)
   let expandedSales = {};
+
+  // Market basket analysis (collapsible)
+  let basketOpen = false;
 
   // Role
   let currentUser = null;
@@ -75,8 +91,6 @@
       sales = reset ? page : [...sales, ...page];
       totalSales = Array.isArray(data) ? sales.length : data.total || sales.length;
       hasMore = Array.isArray(data) ? false : !!data.has_more;
-
-      // If searching and this page returns no matches, auto-fetch more
       await maybeAutoLoadForSearch();
     } catch (err) {
       console.error("Failed to load sales", err);
@@ -92,7 +106,6 @@
     if (!hasMore) return;
     if (autoSearchDepth >= 5) return;
 
-    // Only auto-load if zero of the CURRENT loaded sales match the query
     const anyMatch = sales.some((s) => {
       const inItems = (s.items || []).some((it) =>
         (it.name || "").toLowerCase().includes(q)
@@ -176,6 +189,13 @@
     });
   })();
 
+  // Customer lookup by id — for real balance display on credit rows
+  $: customerById = (() => {
+    const map = {};
+    customers.forEach((c) => (map[c.id] = c));
+    return map;
+  })();
+
   $: summary = (() => {
     let count = 0;
     let total = 0;
@@ -189,7 +209,10 @@
       } else {
         total += Number(s.total_amount || 0);
         paid += Number(s.amount_paid || 0);
-        credit += Math.max(0, Number(s.total_amount || 0) - Number(s.amount_paid || 0));
+        credit += Math.max(
+          0,
+          Number(s.total_amount || 0) - Number(s.amount_paid || 0)
+        );
       }
     });
     return { count, total, paid, credit, voided };
@@ -208,6 +231,49 @@
     return `${days} d ago`;
   })();
 
+  // ── Market basket analysis (client-side) ──
+  $: basketPairs = (() => {
+    const eligible = filteredSales.filter((s) => !s.is_voided);
+    if (eligible.length < 3) return [];
+
+    const soloCount = {}; // product name → # sales containing it
+    const pairCount = {}; // "A|||B" → # sales containing both
+
+    eligible.forEach((s) => {
+      const names = new Set(
+        (s.items || []).map((it) => it.name).filter(Boolean)
+      );
+      const arr = Array.from(names);
+      arr.forEach((n) => (soloCount[n] = (soloCount[n] || 0) + 1));
+      for (let i = 0; i < arr.length; i++) {
+        for (let j = i + 1; j < arr.length; j++) {
+          const key =
+            arr[i] < arr[j] ? `${arr[i]}|||${arr[j]}` : `${arr[j]}|||${arr[i]}`;
+          pairCount[key] = (pairCount[key] || 0) + 1;
+        }
+      }
+    });
+
+    const totalSales = eligible.length;
+    const pairs = [];
+    Object.entries(pairCount).forEach(([key, count]) => {
+      if (count < 2) return;
+      const [a, b] = key.split("|||");
+      const soloA = soloCount[a] || 1;
+      const soloB = soloCount[b] || 1;
+      const support = count / totalSales;
+      const lift = (count * totalSales) / (soloA * soloB);
+      pairs.push({ a, b, count, support, lift });
+    });
+
+    pairs.sort((x, y) => {
+      if (y.count !== x.count) return y.count - x.count;
+      return y.lift - x.lift;
+    });
+
+    return pairs.slice(0, 8);
+  })();
+
   function addItem() {
     saleItems = [...saleItems, { product_id: "", quantity: 1 }];
   }
@@ -220,6 +286,11 @@
     const p = products.find((pr) => pr.id === i.product_id);
     return sum + (p ? Number(p.selling_price || 0) * Number(i.quantity || 0) : 0);
   }, 0);
+
+  // ── New Sale button → jump to Products page & auto-open Add modal ──
+  function goToAddProduct() {
+    window.location.href = "/products?add=1";
+  }
 
   async function submitSale() {
     const items = saleItems.filter((i) => i.product_id && i.quantity > 0);
@@ -239,7 +310,9 @@
       resetForm();
       await fetchSales(true);
     } catch (err) {
-      alert("Failed to create sale: " + (err.response?.data?.detail || "Unknown error"));
+      alert(
+        "Failed to create sale: " + (err.response?.data?.detail || "Unknown error")
+      );
     } finally {
       loading = false;
     }
@@ -270,17 +343,14 @@
     voidReason = "";
     voidModalOpen = true;
   }
-
   function closeVoidModal() {
     voidModalOpen = false;
     selectedSale = null;
     voidReason = "";
   }
-
   function applyQuickReason(r) {
     voidReason = voidReason === r ? "" : r;
   }
-
   async function voidSale() {
     if (!selectedSale) return;
     try {
@@ -290,7 +360,9 @@
       await fetchSales(true);
       closeVoidModal();
     } catch (err) {
-      alert("Failed to void sale: " + (err.response?.data?.detail || "Unknown error"));
+      alert(
+        "Failed to void sale: " + (err.response?.data?.detail || "Unknown error")
+      );
     }
   }
 
@@ -304,13 +376,11 @@
     }));
     showReceipt = true;
   }
-
   function closeReceipt() {
     showReceipt = false;
     receiptSale = null;
     receiptItems = [];
   }
-
   function handleReceiptVoid(sale) {
     closeReceipt();
     openVoidModal(sale);
@@ -321,7 +391,9 @@
   }
 
   function fmt(n) {
-    return Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
+    return Number(n || 0).toLocaleString(undefined, {
+      maximumFractionDigits: 2,
+    });
   }
 
   function fmtDate(iso) {
@@ -339,6 +411,28 @@
   function itemCount(sale) {
     return (sale.items || []).reduce((n, it) => n + (it.quantity || 0), 0);
   }
+
+  // ── Credit display helpers ──
+  // For a credit sale, show what's still owed on the whole customer account
+  // if we don't have a reliable per-sale paid amount.
+  function salePaidFor(sale) {
+    if (sale.is_voided) return 0;
+    if (sale.payment_status === "paid") return Number(sale.total_amount || 0);
+    return Number(sale.amount_paid || 0);
+  }
+  function customerBalanceFor(sale) {
+    if (!sale.customer_id) return null;
+    const c = customerById[sale.customer_id];
+    if (!c) return null;
+    return Number(c.total_credit || 0);
+  }
+  function creditLabel(sale) {
+    const paid = salePaidFor(sale);
+    const total = Number(sale.total_amount || 0);
+    if (paid >= total - 0.01) return "Fully paid";
+    if (paid > 0) return `Partial · MWK ${fmt(paid)} paid`;
+    return "Unpaid";
+  }
 </script>
 
 <Layout title="Sales">
@@ -349,90 +443,10 @@
         <p class="last-sale">Last sale: {lastSaleAgo}</p>
       {/if}
     </div>
-    <button class="btn btn-primary" on:click={() => (showForm = !showForm)} type="button">
-      {#if showForm}
-        <X size={16} strokeWidth={2} /> Cancel
-      {:else}
-        <Plus size={16} strokeWidth={2} /> New Sale
-      {/if}
+    <button class="btn btn-primary" on:click={goToAddProduct} type="button">
+      <Plus size={16} strokeWidth={2} /> New Sale
     </button>
   </div>
-
-  {#if showForm}
-    <div class="card sale-form">
-      <h3>Create Sale</h3>
-      {#each saleItems as item, i}
-        <div class="sale-item-row">
-          <select bind:value={item.product_id}>
-            <option value="">Select product</option>
-            {#each products as p}
-              <option value={p.id}>
-                {p.name} — MWK {p.selling_price?.toLocaleString()}
-              </option>
-            {/each}
-          </select>
-          <input type="number" min="1" bind:value={item.quantity} placeholder="Qty" />
-          <button
-            class="btn-icon"
-            on:click={() => removeItem(i)}
-            type="button"
-            aria-label="Remove item"
-          >
-            <X size={16} strokeWidth={2} />
-          </button>
-        </div>
-      {/each}
-      <button class="btn btn-secondary" on:click={addItem} type="button">
-        <Plus size={16} strokeWidth={2} /> Add Item
-      </button>
-
-      {#if formTotal > 0}
-        <div class="form-total">
-          <span>Total</span>
-          <strong>MWK {fmt(formTotal)}</strong>
-        </div>
-      {/if}
-
-      <div class="credit-section">
-        <label class="credit-toggle">
-          <input type="checkbox" bind:checked={isCreditSale} />
-          <span>This is a credit sale (loan)</span>
-        </label>
-
-        {#if isCreditSale}
-          <div class="customer-selector">
-            <select id="customer" bind:value={selectedCustomerId}>
-              <option value={null}>-- Select customer --</option>
-              {#each customers as c}
-                <option value={c.id}>
-                  {c.name}{c.phone ? ` (${c.phone})` : ""}
-                </option>
-              {/each}
-            </select>
-            <button
-              class="btn btn-sm btn-outline"
-              on:click={() => (showNewCustomerModal = true)}
-              type="button"
-            >
-              <UserPlus size={14} strokeWidth={2} />
-              <span>New</span>
-            </button>
-          </div>
-        {/if}
-      </div>
-
-      <div class="form-actions">
-        <button
-          class="btn btn-primary"
-          on:click={submitSale}
-          disabled={loading || formTotal <= 0}
-          type="button"
-        >
-          {loading ? "Saving..." : "Record Sale"}
-        </button>
-      </div>
-    </div>
-  {/if}
 
   <!-- Filters -->
   <div class="filter-bar">
@@ -480,12 +494,54 @@
         <span>Total: <strong>MWK {fmt(summary.total)}</strong></span>
         {#if summary.credit > 0}
           <span class="sum-sep">·</span>
-          <span class="sum-credit">Credit outstanding: <strong>MWK {fmt(summary.credit)}</strong></span>
+          <span class="sum-credit">
+            Credit outstanding: <strong>MWK {fmt(summary.credit)}</strong>
+          </span>
         {/if}
       {/if}
       {#if summary.voided > 0}
         <span class="sum-sep">·</span>
         <span class="sum-voided">{summary.voided} voided</span>
+      {/if}
+    </div>
+  {/if}
+
+  <!-- ── Market Basket Analysis ── -->
+  {#if basketPairs.length > 0}
+    <div class="basket-card">
+      <button
+        type="button"
+        class="basket-header"
+        on:click={() => (basketOpen = !basketOpen)}
+      >
+        <div class="basket-header-left">
+          <Sparkles size={16} strokeWidth={2} class="basket-icon" />
+          <strong>Bought together</strong>
+          <span class="basket-sub">{basketPairs.length} pair{basketPairs.length === 1 ? "" : "s"} found</span>
+        </div>
+        {#if basketOpen}
+          <ChevronUp size={16} strokeWidth={2} />
+        {:else}
+          <ChevronDown size={16} strokeWidth={2} />
+        {/if}
+      </button>
+      {#if basketOpen}
+        <div class="basket-body">
+          <p class="basket-hint">
+            Products that appear in the same sale — the higher the count, the stronger the affinity. Consider displaying them side-by-side.
+          </p>
+          <ul class="basket-list">
+            {#each basketPairs as p}
+              <li class="basket-row">
+                <span class="basket-pair">{p.a} <span class="basket-plus">+</span> {p.b}</span>
+                <span class="basket-meta">
+                  <strong>{p.count}×</strong>
+                  <span class="basket-support">· {Math.round(p.support * 100)}% of sales</span>
+                </span>
+              </li>
+            {/each}
+          </ul>
+        </div>
       {/if}
     </div>
   {/if}
@@ -520,6 +576,8 @@
           <tbody>
             {#each filteredSales as sale (sale.id)}
               {@const expanded = expandedSales[sale.id]}
+              {@const paidAmt = salePaidFor(sale)}
+              {@const custBal = customerBalanceFor(sale)}
               <tr class:voided-row={sale.is_voided}>
                 <td class="expand-col">
                   <button
@@ -560,7 +618,17 @@
                 <td class="num">
                   <strong>MWK {fmt(sale.total_amount)}</strong>
                   {#if sale.payment_status !== "paid" && !sale.is_voided}
-                    <div class="paid-note">Paid: MWK {fmt(sale.amount_paid)}</div>
+                    <div class="paid-note">
+                      {#if paidAmt > 0}
+                        Paid: MWK {fmt(paidAmt)} on this sale
+                      {:else if custBal !== null && custBal > 0}
+                        Customer owes: MWK {fmt(custBal)}
+                      {:else if custBal !== null}
+                        Customer settled
+                      {:else}
+                        Unpaid
+                      {/if}
+                    </div>
                   {/if}
                 </td>
                 <td class="date-cell">{fmtDate(sale.created_at)}</td>
@@ -639,6 +707,8 @@
       <!-- Mobile cards -->
       <div class="mobile-sales">
         {#each filteredSales as sale (sale.id)}
+          {@const paidAmt = salePaidFor(sale)}
+          {@const custBal = customerBalanceFor(sale)}
           <div class="sale-card" class:voided={sale.is_voided}>
             <div class="sale-card-header">
               <strong>MWK {fmt(sale.total_amount)}</strong>
@@ -657,7 +727,13 @@
               <p class="sale-customer">
                 <strong>{sale.customer_name}</strong>
                 {#if sale.payment_status !== "paid" && !sale.is_voided}
-                  <span class="sale-paid-note">· paid MWK {fmt(sale.amount_paid)}</span>
+                  {#if paidAmt > 0}
+                    <span class="sale-paid-note">· MWK {fmt(paidAmt)} paid</span>
+                  {:else if custBal !== null && custBal > 0}
+                    <span class="sale-paid-note">· owes MWK {fmt(custBal)}</span>
+                  {:else if custBal !== null}
+                    <span class="sale-paid-note settled">· settled</span>
+                  {/if}
                 {/if}
               </p>
             {/if}
@@ -891,122 +967,7 @@
     background: var(--danger, #dc2626);
     color: white;
   }
-  .btn-sm {
-    padding: 0.4rem 0.7rem;
-    font-size: 0.82rem;
-  }
-  .btn-outline {
-    background: transparent;
-    border: 1px solid var(--border, #e5e7eb);
-    color: var(--text, #111827);
-  }
-  .btn-outline:hover {
-    border-color: var(--primary, #0f6b3e);
-    color: var(--primary, #0f6b3e);
-  }
 
-  .card {
-    background: var(--surface, #fff);
-    border: 1px solid var(--border, #e5e7eb);
-    border-radius: 12px;
-    padding: 1.25rem;
-  }
-  .sale-form {
-    margin-bottom: 1.25rem;
-  }
-  .sale-form h3 {
-    margin-top: 0;
-    margin-bottom: 1rem;
-    font-size: 1.05rem;
-  }
-  .sale-item-row {
-    display: grid;
-    grid-template-columns: 1fr 90px 40px;
-    gap: 0.5rem;
-    margin-bottom: 0.6rem;
-  }
-  .form-total {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 0.65rem 0.85rem;
-    background: #f0fdf4;
-    border: 1px solid #86efac;
-    border-radius: 8px;
-    margin-top: 0.5rem;
-    font-size: 0.9rem;
-    color: #166534;
-  }
-  .form-total strong {
-    font-size: 1.05rem;
-    font-weight: 700;
-  }
-
-  .btn-icon {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.3rem;
-    background: transparent;
-    border: 1px solid var(--border, #e5e7eb);
-    border-radius: 8px;
-    cursor: pointer;
-    color: var(--text-light, #6b7280);
-    padding: 0.4rem;
-    transition: all 0.15s;
-    font-size: 0.82rem;
-  }
-  .btn-icon:hover {
-    border-color: var(--primary, #0f6b3e);
-    color: var(--primary, #0f6b3e);
-  }
-  .btn-icon.danger:hover {
-    border-color: var(--danger, #dc2626);
-    color: var(--danger, #dc2626);
-    background: #fef2f2;
-  }
-  .form-actions {
-    margin-top: 1.25rem;
-    display: flex;
-    justify-content: flex-end;
-  }
-
-  .credit-section {
-    margin: 1rem 0;
-    padding: 0.85rem;
-    background: var(--background, #f9fafb);
-    border-radius: 10px;
-  }
-  .credit-toggle {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    cursor: pointer;
-    font-size: 0.9rem;
-    font-weight: 500;
-  }
-  .credit-toggle input {
-    width: auto;
-    cursor: pointer;
-    accent-color: var(--primary, #0f6b3e);
-  }
-  .customer-selector {
-    display: flex;
-    gap: 0.4rem;
-    margin-top: 0.6rem;
-  }
-  .customer-selector select {
-    flex: 1;
-    padding: 0.5rem;
-    border: 1px solid var(--border, #e5e7eb);
-    border-radius: 8px;
-    background: var(--surface, #fff);
-    color: var(--text, #111827);
-    font-size: 0.85rem;
-    min-width: 0;
-  }
-
-  /* Filter bar */
   .filter-bar {
     display: flex;
     gap: 0.5rem;
@@ -1059,7 +1020,6 @@
     box-shadow: 0 0 0 3px rgba(15, 107, 62, 0.1);
   }
 
-  /* Summary bar */
   .summary-bar {
     display: flex;
     align-items: center;
@@ -1087,12 +1047,104 @@
     color: #991b1b;
   }
 
+  /* ── Market basket card ── */
+  .basket-card {
+    background: var(--surface, #fff);
+    border: 1px solid #c7d2fe;
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.05) 0%, var(--surface, #fff) 60%);
+    border-radius: 12px;
+    margin-bottom: 0.75rem;
+    overflow: hidden;
+  }
+  .basket-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+    padding: 0.75rem 1rem;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    gap: 0.5rem;
+  }
+  .basket-header-left {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    min-width: 0;
+    text-align: left;
+  }
+  .basket-icon {
+    color: #4f46e5;
+    flex-shrink: 0;
+  }
+  .basket-header strong {
+    font-size: 0.92rem;
+    color: var(--text, #111827);
+  }
+  .basket-sub {
+    font-size: 0.76rem;
+    color: var(--text-light, #6b7280);
+    font-weight: 500;
+  }
+  .basket-body {
+    padding: 0 1rem 1rem;
+  }
+  .basket-hint {
+    margin: 0 0 0.6rem;
+    font-size: 0.78rem;
+    color: var(--text-light, #6b7280);
+    line-height: 1.4;
+  }
+  .basket-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  .basket-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 0.5rem 0.7rem;
+    background: var(--background, #f9fafb);
+    border-radius: 8px;
+    font-size: 0.85rem;
+    flex-wrap: wrap;
+  }
+  .basket-pair {
+    font-weight: 600;
+    color: var(--text, #111827);
+    min-width: 0;
+  }
+  .basket-plus {
+    color: #4f46e5;
+    font-weight: 700;
+  }
+  .basket-meta {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.3rem;
+    flex-shrink: 0;
+  }
+  .basket-meta strong {
+    font-weight: 700;
+    color: var(--primary, #0f6b3e);
+  }
+  .basket-support {
+    font-size: 0.75rem;
+    color: var(--text-light, #6b7280);
+  }
+
   .no-sales {
     text-align: center;
     padding: 2rem 1rem;
     color: var(--text-light, #6b7280);
   }
-
   .loading-state {
     display: flex;
     align-items: center;
@@ -1167,7 +1219,6 @@
     background: var(--background, #f9fafb);
     color: var(--text, #111827);
   }
-
   .sale-row-products {
     display: flex;
     flex-direction: column;
@@ -1213,6 +1264,7 @@
     color: #b45309;
     margin-top: 0.15rem;
     font-weight: 500;
+    line-height: 1.3;
   }
   .date-cell {
     white-space: nowrap;
@@ -1234,7 +1286,6 @@
     opacity: 0.65;
     background: #fef2f2;
   }
-
   .badge {
     display: inline-block;
     padding: 0.2rem 0.55rem;
@@ -1258,7 +1309,29 @@
     background: #fee2e2;
     color: #991b1b;
   }
-
+  .btn-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.3rem;
+    background: transparent;
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+    cursor: pointer;
+    color: var(--text-light, #6b7280);
+    padding: 0.4rem;
+    transition: all 0.15s;
+    font-size: 0.82rem;
+  }
+  .btn-icon:hover {
+    border-color: var(--primary, #0f6b3e);
+    color: var(--primary, #0f6b3e);
+  }
+  .btn-icon.danger:hover {
+    border-color: var(--danger, #dc2626);
+    color: var(--danger, #dc2626);
+    background: #fef2f2;
+  }
   .items-detail-row td {
     background: var(--background, #f9fafb);
     padding: 0.5rem 0.75rem 0.75rem;
@@ -1293,14 +1366,13 @@
     text-align: right;
     white-space: nowrap;
   }
-
   .load-more-row {
     display: flex;
     justify-content: center;
     padding: 1rem 0;
   }
 
-  /* Mobile cards */
+  /* Mobile */
   .mobile-sales {
     display: none;
     flex-direction: column;
@@ -1333,10 +1405,17 @@
     font-size: 0.82rem;
     color: var(--text, #111827);
     margin: 0 0 0.5rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    align-items: baseline;
   }
   .sale-paid-note {
     color: #b45309;
     font-size: 0.75rem;
+  }
+  .sale-paid-note.settled {
+    color: #166534;
   }
   .sale-items-list {
     border-top: 1px dashed var(--border, #e5e7eb);
@@ -1483,9 +1562,7 @@
     font-size: 0.88rem;
     color: var(--text, #111827);
   }
-  .modal input,
-  .sale-form select,
-  .sale-form input {
+  .modal input {
     width: 100%;
     padding: 0.6rem;
     border: 1px solid var(--border, #e5e7eb);
@@ -1495,9 +1572,7 @@
     font-size: 0.9rem;
     box-sizing: border-box;
   }
-  .modal input:focus,
-  .sale-form select:focus,
-  .sale-form input:focus {
+  .modal input:focus {
     outline: none;
     border-color: var(--primary, #0f6b3e);
     box-shadow: 0 0 0 3px rgba(15, 107, 62, 0.1);
@@ -1516,16 +1591,6 @@
     .mobile-sales {
       display: flex;
     }
-    .sale-item-row {
-      grid-template-columns: 1fr 70px 40px;
-    }
-    .form-actions {
-      justify-content: stretch;
-    }
-    .form-actions .btn {
-      width: 100%;
-      justify-content: center;
-    }
     .date-pills {
       border-left: none;
       padding-left: 0;
@@ -1535,10 +1600,6 @@
   @media (max-width: 480px) {
     .sales-header {
       flex-wrap: wrap;
-    }
-    .sale-item-row {
-      grid-template-columns: 1fr 60px 36px;
-      gap: 0.35rem;
     }
     .btn {
       padding: 0.5rem 0.85rem;

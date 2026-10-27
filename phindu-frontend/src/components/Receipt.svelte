@@ -90,22 +90,24 @@
         </div>
       </div>
 
+      <!-- Rebuilt items table: Qty is a ×N badge in its own centered column;
+           price & total carry "MWK" so they can never be confused with qty. -->
       <table class="receipt-items">
         <thead>
           <tr>
-            <th>Item</th>
-            <th class="num">Qty</th>
-            <th class="num">Price</th>
-            <th class="num">Total</th>
+            <th class="col-item">Item</th>
+            <th class="col-qty">Qty</th>
+            <th class="col-num">Price</th>
+            <th class="col-num">Total</th>
           </tr>
         </thead>
         <tbody>
           {#each items as it}
             <tr>
-              <td>{it.name}</td>
-              <td class="num">{it.qty}</td>
-              <td class="num">{fmt(it.selling_price)}</td>
-              <td class="num">{fmt(it.selling_price * it.qty)}</td>
+              <td class="col-item">{it.name}</td>
+              <td class="col-qty"><span class="qty-badge">×{it.qty}</span></td>
+              <td class="col-num">MWK {fmt(it.selling_price)}</td>
+              <td class="col-num">MWK {fmt(it.selling_price * it.qty)}</td>
             </tr>
           {/each}
         </tbody>
@@ -184,7 +186,7 @@
   .receipt-modal {
     background: var(--surface, #fff);
     border-radius: 12px;
-    max-width: 420px;
+    max-width: 460px;
     width: 100%;
     max-height: 92vh;
     overflow-y: auto;
@@ -235,6 +237,7 @@
     font-family: "SF Mono", Consolas, monospace;
     font-size: 0.85rem;
     color: #111827;
+    font-variant-numeric: tabular-nums;
   }
 
   .receipt-header {
@@ -293,11 +296,15 @@
     color: #991b1b;
   }
 
+  /* ── Items table ──
+     Fixed layout so columns never shift between rows.
+     Qty gets its own centered column with a "×N" badge. */
   .receipt-items {
     width: 100%;
     border-collapse: collapse;
     font-size: 0.8rem;
     margin-bottom: 0.85rem;
+    table-layout: fixed;
   }
   .receipt-items th {
     text-align: left;
@@ -309,13 +316,41 @@
     border-bottom: 1px solid #e5e7eb;
     padding: 0.35rem 0;
   }
-  .receipt-items td {
-    padding: 0.35rem 0;
-    border-bottom: 1px dashed #f3f4f6;
+  .col-item {
+    width: 46%;
+    text-align: left;
   }
-  .receipt-items .num {
+  .col-qty {
+    width: 12%;
+    text-align: center;
+  }
+  .col-num {
+    width: 21%;
     text-align: right;
     white-space: nowrap;
+  }
+  .receipt-items td {
+    padding: 0.4rem 0;
+    border-bottom: 1px dashed #f3f4f6;
+    vertical-align: top;
+    word-break: break-word;
+  }
+  .receipt-items td.col-qty {
+    text-align: center;
+  }
+  .receipt-items td.col-num {
+    text-align: right;
+    white-space: nowrap;
+  }
+  .qty-badge {
+    display: inline-block;
+    padding: 0.05rem 0.35rem;
+    background: #f3f4f6;
+    color: #374151;
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    line-height: 1.3;
   }
 
   .receipt-totals {
@@ -431,7 +466,9 @@
     .receipt {
       padding: 0.5rem;
     }
-    body * {
+    /* :global() is required because we genuinely need to hide the whole
+       page during print — scoping would break this behavior. */
+    :global(body *) {
       visibility: hidden;
     }
     #receipt-print-area,
