@@ -4,8 +4,8 @@ from datetime import datetime, timedelta
 from itertools import combinations
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import Integer, cast, extract, func
-from sqlalchemy.orm import Session
+from sqlalchemy import Integer, and_, cast, exists, extract, func
+from sqlalchemy.orm import Session, aliased
 
 from app.api.dependencies import get_current_shop_id
 from app.db.models.expense import Expense
@@ -58,6 +58,63 @@ def _compute_peak_hours_array(db: Session, shop_id: str) -> list[int]:
         if r.hour is not None:
             hours[int(r.hour)] = r.count
     return hours
+
+
+def _compute_peak_grid(db: Session, shop_id: str) -> dict:
+    """
+    Weekday × hour grid of sale counts.
+
+    Returns:
+        {
+          "grid": [[int]*24]*7,        # grid[weekday][hour], weekday 0=Mon
+          "max": int,                  # largest single cell
+          "weekday_labels": [...],
+        }
+
+    Uses the same portability pattern as _compute_peak_hours_array:
+    strftime on SQLite, extract on Postgres/other.
+    """
+    if _IS_SQLITE:
+        weekday_expr = cast(func.strftime("%w", Sale.created_at), Integer).label("wd")
+        # SQLite strftime('%w') → 0 = Sunday, 1 = Monday, … 6 = Saturday
+        weekday_is_sunday_zero = True
+    else:
+        weekday_expr = extract("dow", Sale.created_at).label("wd")
+        # Postgres extract(dow) → 0 = Sunday, 6 = Saturday as well
+        weekday_is_sunday_zero = True
+
+    if _IS_SQLITE:
+        hour_expr = cast(func.strftime("%H", Sale.created_at), Integer).label("hour")
+    else:
+        hour_expr = extract("hour", Sale.created_at).label("hour")
+
+    results = (
+        db.query(
+            weekday_expr,
+            hour_expr,
+            func.count(Sale.id).label("count"),
+        )
+        .filter(Sale.shop_id == shop_id)
+        .group_by(weekday_expr, hour_expr)
+        .all()
+    )
+
+    grid = [[0] * 24 for _ in range(7)]
+    for r in results:
+        if r.wd is None or r.hour is None:
+            continue
+        wd = int(r.wd)
+        # Normalise Sunday=0 → Monday=0
+        wd_mon0 = (wd - 1) % 7 if weekday_is_sunday_zero else wd
+        grid[wd_mon0][int(r.hour)] = int(r.count or 0)
+
+    max_val = max((max(row) for row in grid), default=0)
+
+    return {
+        "grid": grid,
+        "max": max_val,
+        "weekday_labels": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+    }
 
 
 def _compute_top_products(db: Session, shop_id: str, period: str) -> list[dict]:
@@ -425,14 +482,27 @@ def _compute_week_glance(db: Session, shop_id: str) -> dict:
     }
 
 
-def _compute_low_stock(db: Session, shop_id: str, threshold: int = 5) -> list[dict]:
+def _compute_low_stock(db: Session, shop_id: str) -> list[dict]:
+    """
+    Leaf products only (no children). Parents-with-variants are excluded
+    because their stock_qty is typically 0 / unused and only produces
+    false alerts. Uses each product's own low_stock_threshold.
+    """
+    child = aliased(Product)
     results = (
         db.query(Product.id, Product.name, Product.category, Product.stock_qty)
         .filter(
             Product.shop_id == shop_id,
             Product.is_deleted == False,
             Product.archived == False,
-            Product.stock_qty <= threshold,
+            Product.stock_qty <= Product.low_stock_threshold,
+            ~exists().where(
+                and_(
+                    child.parent_id == Product.id,
+                    child.shop_id == shop_id,
+                    child.is_deleted == False,
+                )
+            ),
         )
         .order_by(Product.stock_qty.asc())
         .limit(10)
@@ -668,6 +738,8 @@ def analytics_summary(
     week_glance = _compute_week_glance(db, shop_id)
     week_expenses = week_glance.get("expenses", {}).get("current", 0.0)
 
+    peak_grid_payload = _compute_peak_grid(db, shop_id)
+
     return {
         "period": period,
         "generated_at": datetime.utcnow().isoformat(),
@@ -680,6 +752,10 @@ def analytics_summary(
         "category_performance": _compute_category_performance(db, shop_id, period),
         "profit_margins": _compute_profit_margins(db, shop_id, period),
         "peak_hours": _compute_peak_hours_array(db, shop_id),
+        # ── new: weekday × hour grid for per-day heatmap ──
+        "peak_grid": peak_grid_payload["grid"],
+        "peak_grid_max": peak_grid_payload["max"],
+        "peak_grid_weekday_labels": peak_grid_payload["weekday_labels"],
         "expense_breakdown": _compute_expense_breakdown(db, shop_id, period),
         "recent_price_changes": _compute_recent_price_changes(
             db, shop_id, days=price_history_days, limit=30, include_variants=True
@@ -689,6 +765,6 @@ def analytics_summary(
         ),
         "week_glance": week_glance,
         "week_expenses": round(float(week_expenses or 0), 2),
-        "low_stock": _compute_low_stock(db, shop_id, threshold=5),
+        "low_stock": _compute_low_stock(db, shop_id),
         "market_basket": _compute_market_basket(db, shop_id, period="month", max_pairs=10),
     }

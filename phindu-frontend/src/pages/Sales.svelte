@@ -200,7 +200,6 @@
     let count = 0;
     let total = 0;
     let paid = 0;
-    let credit = 0;
     let voided = 0;
     filteredSales.forEach((s) => {
       count += 1;
@@ -209,12 +208,22 @@
       } else {
         total += Number(s.total_amount || 0);
         paid += Number(s.amount_paid || 0);
-        credit += Math.max(
-          0,
-          Number(s.total_amount || 0) - Number(s.amount_paid || 0)
-        );
       }
     });
+
+    // Real outstanding credit = sum of *active* balances across customers
+    // that appear in the current filtered view. Settled customers
+    // (total_credit == 0) are excluded automatically.
+    const seenCustomerIds = new Set();
+    filteredSales.forEach((s) => {
+      if (!s.is_voided && s.customer_id) seenCustomerIds.add(s.customer_id);
+    });
+    let credit = 0;
+    seenCustomerIds.forEach((cid) => {
+      const c = customerById[cid];
+      if (c) credit += Math.max(0, Number(c.total_credit || 0));
+    });
+
     return { count, total, paid, credit, voided };
   })();
 
@@ -494,7 +503,10 @@
         <span>Total: <strong>MWK {fmt(summary.total)}</strong></span>
         {#if summary.credit > 0}
           <span class="sum-sep">·</span>
-          <span class="sum-credit">
+          <span
+            class="sum-credit"
+            title="Active customer balances only — settled credit is excluded"
+          >
             Credit outstanding: <strong>MWK {fmt(summary.credit)}</strong>
           </span>
         {/if}

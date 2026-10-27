@@ -16,17 +16,12 @@
     Wallet,
     Coins,
     Package,
-    ChevronDown,
-    ChevronUp,
-    ArrowDownCircle,
-    ArrowUpCircle,
-    DollarSign,
-    ShoppingBag,
-    PiggyBank,
     Users,
+    Store,
   } from "lucide-svelte";
   import Layout from "../components/Layout.svelte";
   import MetricCard from "../components/MetricCard.svelte";
+  import InfoCards from "../components/InfoCards.svelte";
   import API from "../api/api";
 
   let data = {
@@ -49,7 +44,6 @@
   let health = null;
   let focus = [];
   let deltas = null;
-  let cashFlow = null;
   let topProducts = [];
 
   let alerts = [];
@@ -66,7 +60,21 @@
   let trendDays = 7;
   let trendLoading = false;
 
-  let cashFlowExpanded = false;
+  // Sessions & Sales trend (replaces old cash-flow card)
+  let sessionsTrend = [];
+  let sessionsTrendTotals = null;
+  let sessionsLoading = false;
+  let sessionsDays = 7;
+  const SESSION_OPTIONS = [7, 14, 30];
+
+  // New informational cards
+  let willRunOut = [];
+  let profitByCategory = [];
+  let customerHealth = null;
+  let inventoryValue = null;
+  let expenseBreakdown = null;
+  let goodNews = [];
+
   let pollId = null;
 
   onMount(() => {
@@ -102,13 +110,19 @@
         healthRes,
         focusRes,
         deltaRes,
-        cfRes,
+        sessRes,
         topRes,
         alertsRes,
         topCustRes,
         debtRes,
         slowRes,
         heatmapRes,
+        runOutRes,
+        catRes,
+        custHealthRes,
+        invRes,
+        expRes,
+        goodNewsRes,
       ] = await Promise.all([
         API.get("/sessions/current").catch(() => ({ data: {} })),
         API.get(`/analytics/revenue-trend?days=${trendDays}`),
@@ -116,13 +130,21 @@
         API.get("/dashboard/health-score"),
         API.get("/dashboard/focus"),
         API.get("/dashboard/metric-deltas"),
-        API.get("/dashboard/cash-flow?days=7"),
+        API.get(`/dashboard/sessions-trend?days=${sessionsDays}`).catch(() => ({
+          data: { items: [], totals: null },
+        })),
         API.get("/dashboard/top-products-trend?days=7&limit=3"),
         API.get("/dashboard/alerts").catch(() => ({ data: { alerts: [] } })),
         API.get("/dashboard/top-customers?days=7&limit=5").catch(() => ({ data: { customers: [] } })),
         API.get("/dashboard/debt-ageing").catch(() => ({ data: null })),
         API.get("/dashboard/slow-movers?days=30&limit=5").catch(() => ({ data: { products: [] } })),
         API.get(`/dashboard/heatmap?days=${heatmapDays}`).catch(() => ({ data: null })),
+        API.get("/dashboard/will-run-out?days=14&limit=5").catch(() => ({ data: { products: [] } })),
+        API.get("/dashboard/profit-by-category?days=30").catch(() => ({ data: { categories: [] } })),
+        API.get("/dashboard/customer-health?days=7").catch(() => ({ data: null })),
+        API.get("/dashboard/inventory-value").catch(() => ({ data: null })),
+        API.get("/dashboard/expense-breakdown?days=30").catch(() => ({ data: null })),
+        API.get("/dashboard/good-news").catch(() => ({ data: { items: [] } })),
       ]);
 
       currentSession = sessionRes.data?.id ? sessionRes.data : null;
@@ -144,15 +166,24 @@
       health = healthRes.data;
       focus = focusRes.data?.items || [];
       deltas = deltaRes.data;
-      cashFlow = cfRes.data;
       topProducts = topRes.data?.products || [];
       sessionSummary = summaryRes.data;
+
+      sessionsTrend = sessRes.data?.items || [];
+      sessionsTrendTotals = sessRes.data?.totals || null;
 
       alerts = alertsRes.data?.alerts || [];
       topCustomers = topCustRes.data?.customers || [];
       debtAgeing = debtRes.data;
       slowMovers = slowRes.data?.products || [];
       heatmap = heatmapRes.data;
+
+      willRunOut = runOutRes.data?.products || [];
+      profitByCategory = catRes.data?.categories || [];
+      customerHealth = custHealthRes.data;
+      inventoryValue = invRes.data;
+      expenseBreakdown = expRes.data;
+      goodNews = goodNewsRes.data?.items || [];
     } catch (err) {
       error = "Failed to load dashboard data";
       console.error(err);
@@ -197,6 +228,25 @@
     fetchHeatmap();
   }
 
+  async function loadSessionsTrend() {
+    sessionsLoading = true;
+    try {
+      const res = await API.get(`/dashboard/sessions-trend?days=${sessionsDays}`);
+      sessionsTrend = res.data?.items || [];
+      sessionsTrendTotals = res.data?.totals || null;
+    } catch (e) {
+      console.error(e);
+    } finally {
+      sessionsLoading = false;
+    }
+  }
+
+  function setSessionsDays(n) {
+    if (sessionsDays === n) return;
+    sessionsDays = n;
+    loadSessionsTrend();
+  }
+
   function heatmapIntensity(value, max) {
     if (!max || !value) return 0;
     return Math.min(1, Math.sqrt(value / max));
@@ -230,6 +280,32 @@
   $: heatmapTotal = heatmap
     ? heatmap.grid.flat().reduce((s, v) => s + v, 0)
     : 0;
+
+  // ── Sessions chart derived values ──
+  $: maxDayValue = sessionsTrend.length
+    ? Math.max(...sessionsTrend.map((d) => Math.max(d.sessions, d.sales)), 1)
+    : 1;
+
+  $: activeDays = sessionsTrend.filter((d) => d.sessions > 0).length;
+
+  $: avgSessionsPerActiveDay = activeDays
+    ? (sessionsTrend.reduce((s, d) => s + d.sessions, 0) / activeDays).toFixed(1)
+    : "0";
+
+  $: sessionsByWeekday = (() => {
+    const groups = {};
+    const order = [];
+    for (const d of sessionsTrend) {
+      const wd = new Date(d.date).toLocaleDateString(undefined, { weekday: "short" });
+      if (!groups[wd]) {
+        groups[wd] = { sessions: 0, sales: 0 };
+        order.push(wd);
+      }
+      groups[wd].sessions += d.sessions;
+      groups[wd].sales += d.sales;
+    }
+    return order.map((wd) => [wd, groups[wd]]);
+  })();
 
   $: healthComponents = (() => {
     const c = health?.components;
@@ -320,6 +396,16 @@
           {/each}
         </div>
       {/if}
+
+      <!-- ── Good news + analytical cards ── -->
+      <InfoCards
+        goodNews={goodNews}
+        willRunOut={willRunOut}
+        profitByCategory={profitByCategory}
+        customerHealth={customerHealth}
+        inventoryValue={inventoryValue}
+        expenseBreakdown={expenseBreakdown}
+      />
 
       {#if currentSession}
         <div class="session-info">
@@ -520,107 +606,107 @@
         <MetricCard title="Avg Sale Value" value={data.avg_sale_value} prefix="MWK" />
       </div>
 
-      <!-- ── Cash Flow ── -->
-      {#if cashFlow}
-        <div class="cashflow-card">
-          <div class="cf-header-row">
-            <h3 class="cf-header">
-              <Wallet size={18} strokeWidth={2} />
-              Cash Flow (Last {cashFlow.window_days} Days)
-            </h3>
-            <button
-              class="cf-toggle"
-              on:click={() => (cashFlowExpanded = !cashFlowExpanded)}
-              type="button"
-            >
-              {#if cashFlowExpanded}
-                <ChevronUp size={14} /> Hide breakdown
-              {:else}
-                <ChevronDown size={14} /> How?
-              {/if}
-            </button>
+      <!-- ── Sessions & Sales Trend (replaces old Cash Flow card) ── -->
+      <div class="sessions-card">
+        <div class="sess-header-row">
+          <h3 class="sess-header">
+            <Store size={18} strokeWidth={2} />
+            Sessions &amp; Sales (Last {sessionsDays} Days)
+          </h3>
+          <div class="period-tabs" role="tablist" aria-label="Sessions period">
+            {#each SESSION_OPTIONS as n}
+              <button
+                type="button"
+                class="period-tab"
+                class:active={sessionsDays === n}
+                on:click={() => setSessionsDays(n)}
+                aria-pressed={sessionsDays === n}
+                disabled={sessionsLoading}
+              >
+                {n}d
+              </button>
+            {/each}
           </div>
-
-          <div class="cf-grid">
-            <div class="cf-cell in">
-              <span class="cf-icon-wrap"><ArrowDownCircle size={16} /></span>
-              <div class="cf-body">
-                <span class="cf-label">Cash In</span>
-                <span class="cf-value">+MWK {formatMoney(cashFlow.cash_in)}</span>
-              </div>
-            </div>
-            <div class="cf-cell out">
-              <span class="cf-icon-wrap"><ArrowUpCircle size={16} /></span>
-              <div class="cf-body">
-                <span class="cf-label">Cash Out</span>
-                <span class="cf-value">−MWK {formatMoney(cashFlow.cash_out)}</span>
-              </div>
-            </div>
-            <div class="cf-cell net" class:negative={cashFlow.net < 0}>
-              <span class="cf-icon-wrap"><DollarSign size={16} /></span>
-              <div class="cf-body">
-                <span class="cf-label">Net</span>
-                <span class="cf-value">
-                  {cashFlow.net >= 0 ? "+" : "−"}MWK {formatMoney(Math.abs(cashFlow.net))}
-                </span>
-              </div>
-            </div>
-            <div class="cf-cell drawer">
-              <span class="cf-icon-wrap"><Wallet size={16} /></span>
-              <div class="cf-body">
-                <span class="cf-label">In Drawer</span>
-                <span class="cf-value">
-                  {#if cashFlow.drawer === null}
-                    —
-                  {:else}
-                    MWK {formatMoney(cashFlow.drawer)}
-                  {/if}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {#if cashFlowExpanded}
-            <div class="cf-breakdown">
-              <div class="cfb-col">
-                <h4 class="cfb-heading in">
-                  <ArrowDownCircle size={14} /> Cash In
-                </h4>
-                <div class="cfb-row">
-                  <span><ShoppingBag size={12} /> Paid sales</span>
-                  <strong>MWK {formatMoney(cashFlow.breakdown?.sales_paid)}</strong>
-                </div>
-                <div class="cfb-row">
-                  <span><Users size={12} /> Customer payments</span>
-                  <strong>MWK {formatMoney(cashFlow.breakdown?.customer_payments)}</strong>
-                </div>
-              </div>
-
-              <div class="cfb-col">
-                <h4 class="cfb-heading out">
-                  <ArrowUpCircle size={14} /> Cash Out
-                </h4>
-                <div class="cfb-row">
-                  <span><PiggyBank size={12} /> Expenses</span>
-                  <strong>MWK {formatMoney(cashFlow.breakdown?.expenses)}</strong>
-                </div>
-                <div class="cfb-row">
-                  <span><Package size={12} /> Stock purchases</span>
-                  <strong>MWK {formatMoney(cashFlow.breakdown?.stock_purchases)}</strong>
-                </div>
-              </div>
-            </div>
-
-            <p class="cf-explainer">
-              <strong>In Drawer</strong> is the currently open session's physical cash,
-              not the {cashFlow.window_days}-day total.
-              {#if cashFlow.session_id === null}
-                <em>No session is open right now.</em>
-              {/if}
-            </p>
-          {/if}
         </div>
-      {/if}
+
+        {#if sessionsLoading}
+          <p class="no-data">Loading…</p>
+        {:else if sessionsTrend.length === 0}
+          <p class="no-data">No sessions recorded in this period.</p>
+        {:else}
+          <!-- KPI row -->
+          <div class="sess-kpis">
+            <div class="sess-kpi">
+              <span class="sk-label">Sessions</span>
+              <span class="sk-value">{sessionsTrendTotals?.sessions ?? 0}</span>
+            </div>
+            <div class="sess-kpi">
+              <span class="sk-label">Active days</span>
+              <span class="sk-value">{activeDays}/{sessionsTrend.length}</span>
+            </div>
+            <div class="sess-kpi">
+              <span class="sk-label">Avg sessions / active day</span>
+              <span class="sk-value">{avgSessionsPerActiveDay}</span>
+            </div>
+            <div class="sess-kpi">
+              <span class="sk-label">Total sales</span>
+              <span class="sk-value">{sessionsTrendTotals?.sales ?? 0}</span>
+            </div>
+          </div>
+
+          <!-- Dual bar chart: sessions (green) + sales (blue) -->
+          <div class="sess-chart">
+            {#each sessionsTrend as d (d.date)}
+              {@const sessH = (d.sessions / maxDayValue) * 100}
+              {@const saleH = (d.sales / maxDayValue) * 100}
+              <div
+                class="sess-day"
+                class:empty={d.sessions === 0}
+                title="{new Date(d.date).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}
+— {d.sessions} session{d.sessions === 1 ? '' : 's'}
+— {d.sales} sale{d.sales === 1 ? '' : 's'}
+— MWK {formatMoney(d.revenue)}"
+              >
+                <div class="sess-bars">
+                  <div class="sess-bar sessions-bar" style="height: {Math.max(2, sessH)}%"></div>
+                  <div class="sess-bar sales-bar" style="height: {Math.max(2, saleH)}%"></div>
+                </div>
+                {#if sessionsDays <= 14}
+                  <span class="sess-count">{d.sessions}</span>
+                {/if}
+                <span class="sess-day-label">
+                  {sessionsDays <= 7
+                    ? new Date(d.date).toLocaleDateString(undefined, { weekday: "short" })
+                    : new Date(d.date).toLocaleDateString(undefined, { day: "numeric" })}
+                </span>
+              </div>
+            {/each}
+          </div>
+
+          <div class="sess-legend">
+            <span class="legend-item"><span class="legend-dot sessions-dot"></span> Sessions</span>
+            <span class="legend-item"><span class="legend-dot sales-dot"></span> Sales</span>
+            {#if activeDays < sessionsTrend.length}
+              <span class="legend-note">
+                {sessionsTrend.length - activeDays} day{sessionsTrend.length - activeDays === 1 ? "" : "s"} had no activity
+              </span>
+            {/if}
+          </div>
+
+          <!-- Per-weekday summary -->
+          {#if sessionsByWeekday.length > 1}
+            <div class="sess-weekday-grid">
+              {#each sessionsByWeekday as [wd, v]}
+                <div class="wd-chip">
+                  <span class="wd-name">{wd}</span>
+                  <span class="wd-main">{v.sessions}<small> sess</small></span>
+                  <span class="wd-sub">{v.sales} sales</span>
+                </div>
+              {/each}
+            </div>
+          {/if}
+        {/if}
+      </div>
 
       <!-- ── Debt Ageing ── -->
       {#if debtAgeing && debtAgeing.total > 0}
@@ -1103,7 +1189,8 @@
 
   .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.9rem; width: 100%; box-sizing: border-box; }
 
-  .cashflow-card {
+  /* ── Sessions & Sales Trend ── */
+  .sessions-card {
     background: var(--surface, #fff);
     border: 1px solid var(--border, #e5e7eb);
     border-radius: 12px;
@@ -1114,34 +1201,100 @@
     flex-direction: column;
     gap: 0.75rem;
   }
-  .cf-header-row { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
-  .cf-header { display: flex; align-items: center; gap: 0.5rem; margin: 0; font-size: 1rem; font-weight: 600; color: var(--text, #111827); }
-  .cf-toggle { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.35rem 0.7rem; background: transparent; border: 1px solid var(--border, #e5e7eb); border-radius: 7px; font-size: 0.78rem; font-weight: 600; color: var(--text-light, #6b7280); cursor: pointer; transition: all 0.15s; }
-  .cf-toggle:hover { border-color: var(--primary, #0f6b3e); color: var(--primary, #0f6b3e); }
-  .cf-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.5rem; }
-  .cf-cell { display: flex; align-items: center; gap: 0.55rem; padding: 0.65rem 0.7rem; border-radius: 10px; background: var(--background, #f9fafb); border: 1px solid var(--border, #e5e7eb); min-width: 0; }
-  .cf-cell.in { background: rgba(22, 163, 74, 0.06); border-color: rgba(22, 163, 74, 0.2); }
-  .cf-cell.out { background: rgba(220, 38, 38, 0.06); border-color: rgba(220, 38, 38, 0.2); }
-  .cf-cell.net { background: rgba(59, 130, 246, 0.06); border-color: rgba(59, 130, 246, 0.2); }
-  .cf-cell.net.negative { background: rgba(220, 38, 38, 0.06); border-color: rgba(220, 38, 38, 0.2); }
-  .cf-cell.drawer { background: rgba(168, 85, 247, 0.06); border-color: rgba(168, 85, 247, 0.2); }
-  .cf-icon-wrap { flex-shrink: 0; width: 32px; height: 32px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; background: rgba(255, 255, 255, 0.7); }
-  .cf-cell.in .cf-icon-wrap { color: #15803d; }
-  .cf-cell.out .cf-icon-wrap { color: #b91c1c; }
-  .cf-cell.net .cf-icon-wrap { color: #1e40af; }
-  .cf-cell.drawer .cf-icon-wrap { color: #7e22ce; }
-  .cf-body { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
-  .cf-label { font-size: 0.68rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; color: var(--text-light, #6b7280); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .cf-value { font-size: 0.9rem; font-weight: 700; color: var(--text, #111827); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .cf-breakdown { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; padding: 0.75rem; background: var(--background, #f9fafb); border-radius: 10px; border: 1px dashed var(--border, #e5e7eb); }
-  .cfb-col { display: flex; flex-direction: column; gap: 0.4rem; }
-  .cfb-heading { display: flex; align-items: center; gap: 0.3rem; margin: 0 0 0.25rem; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
-  .cfb-heading.in { color: #15803d; }
-  .cfb-heading.out { color: #b91c1c; }
-  .cfb-row { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; font-size: 0.82rem; color: var(--text-light, #6b7280); }
-  .cfb-row span { display: inline-flex; align-items: center; gap: 0.3rem; }
-  .cfb-row strong { color: var(--text, #111827); font-weight: 700; }
-  .cf-explainer { margin: 0; font-size: 0.75rem; color: var(--text-light, #6b7280); font-style: italic; padding: 0.5rem 0.75rem; background: rgba(59, 130, 246, 0.05); border-left: 3px solid #3b82f6; border-radius: 6px; }
+  .sess-header-row {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 0.5rem; flex-wrap: wrap;
+  }
+  .sess-header {
+    display: flex; align-items: center; gap: 0.5rem;
+    margin: 0; font-size: 1rem; font-weight: 600; color: var(--text, #111827);
+  }
+  .sess-kpis {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.5rem;
+  }
+  .sess-kpi {
+    display: flex; flex-direction: column; gap: 0.1rem;
+    padding: 0.55rem 0.7rem;
+    background: var(--background, #f9fafb);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 9px;
+    min-width: 0;
+  }
+  .sk-label {
+    font-size: 0.65rem; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.03em; color: var(--text-light, #6b7280);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .sk-value {
+    font-size: 1.05rem; font-weight: 800; color: var(--text, #111827);
+  }
+
+  .sess-chart {
+    display: flex; align-items: flex-end; gap: 0.5rem;
+    height: 190px; padding-top: 0.5rem;
+    border-bottom: 1px solid var(--border, #e5e7eb);
+    overflow-x: auto; overflow-y: hidden;
+  }
+  .sess-day {
+    flex: 1 1 0; min-width: 20px;
+    display: flex; flex-direction: column; align-items: center;
+    height: 100%; justify-content: flex-end;
+    position: relative;
+  }
+  .sess-day.empty .sess-bar { opacity: 0.25; }
+  .sess-bars {
+    flex: 1; width: 100%;
+    display: flex; align-items: flex-end; justify-content: center;
+    gap: 2px; min-height: 2px;
+  }
+  .sess-bar {
+    width: 45%; max-width: 22px;
+    border-radius: 4px 4px 0 0;
+    transition: height 0.3s ease;
+  }
+  .sessions-bar { background: var(--primary, #0f6b3e); }
+  .sales-bar    { background: #3b82f6; }
+  .sess-count {
+    font-size: 0.62rem; font-weight: 700; color: var(--text, #111827);
+    margin-top: 2px;
+  }
+  .sess-day-label {
+    margin-top: 0.35rem; font-size: 0.7rem; font-weight: 500;
+    color: var(--text-light, #6b7280); white-space: nowrap;
+  }
+
+  .sess-legend {
+    display: flex; align-items: center; gap: 0.9rem;
+    font-size: 0.75rem; color: var(--text-light, #6b7280);
+    flex-wrap: wrap;
+  }
+  .legend-item { display: inline-flex; align-items: center; gap: 0.3rem; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 3px; }
+  .sessions-dot { background: var(--primary, #0f6b3e); }
+  .sales-dot    { background: #3b82f6; }
+  .legend-note { margin-left: auto; font-style: italic; opacity: 0.8; }
+
+  .sess-weekday-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+    gap: 0.4rem; padding-top: 0.5rem;
+    border-top: 1px dashed var(--border, #e5e7eb);
+  }
+  .wd-chip {
+    display: flex; flex-direction: column; gap: 0.05rem;
+    padding: 0.45rem 0.55rem;
+    background: var(--background, #f9fafb);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px; text-align: center;
+  }
+  .wd-name {
+    font-size: 0.65rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.04em; color: var(--text-light, #6b7280);
+  }
+  .wd-main {
+    font-size: 1rem; font-weight: 800; color: var(--text, #111827);
+  }
+  .wd-main small { font-size: 0.65rem; font-weight: 500; color: var(--text-light, #6b7280); }
+  .wd-sub { font-size: 0.68rem; color: var(--text-light, #6b7280); }
 
   /* Debt Ageing */
   .debt-card { background: var(--surface, #fff); border: 1px solid var(--border, #e5e7eb); border-radius: 12px; padding: 1rem 1.1rem; box-sizing: border-box; width: 100%; }
@@ -1233,10 +1386,10 @@
     .bar-value { font-size: 0.6rem; }
     .bar-label { font-size: 0.68rem; }
     .today-strip { grid-template-columns: repeat(2, 1fr); row-gap: 0.6rem; }
-    .cf-grid { grid-template-columns: repeat(2, 1fr); }
-    .cf-breakdown { grid-template-columns: 1fr; }
     .ss-grid { grid-template-columns: repeat(2, 1fr); }
     .debt-buckets { grid-template-columns: repeat(2, 1fr); }
+    .sess-kpis { grid-template-columns: repeat(2, 1fr); }
+    .sess-chart { height: 160px; gap: 0.35rem; }
   }
 
   @media (max-width: 480px) {
@@ -1255,10 +1408,6 @@
     .focus-title { font-size: 0.85rem; }
     .focus-detail, .focus-hint { font-size: 0.75rem; }
     .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem; }
-    .cashflow-card { padding: 0.85rem 0.9rem; }
-    .cf-grid { gap: 0.4rem; }
-    .cf-value { font-size: 0.82rem; }
-    .cf-icon-wrap { width: 28px; height: 28px; }
     .chart-card { padding: 0.75rem; border-radius: 10px; }
     .chart-header { margin-bottom: 0.75rem; }
     .chart-header h3 { font-size: 0.9rem; }
@@ -1278,6 +1427,11 @@
     .heatmap-cell { height: 18px; border-radius: 2px; }
     .heatmap-day-label { height: 18px; font-size: 0.6rem; }
     .heatmap-hour-label { font-size: 0.55rem; }
+    .sessions-card { padding: 0.85rem 0.9rem; }
+    .sess-chart { height: 130px; gap: 0.25rem; }
+    .sess-count { display: none; }
+    .sess-day-label { font-size: 0.6rem; }
+    .sess-weekday-grid { grid-template-columns: repeat(2, 1fr); }
   }
 
   @media (max-width: 360px) {
