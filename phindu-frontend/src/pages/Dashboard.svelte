@@ -287,25 +287,36 @@
       {#if alerts.length > 0}
         <div class="alerts-strip">
           {#each alerts as a (a.id)}
-            <a
-              class="alert-chip sev-{a.severity}"
-              href={a.link || "#"}
-              class:no-link={!a.link}
-            >
-              {#if a.severity === "high"}
-                <AlertCircle size={14} strokeWidth={2.5} />
-              {:else if a.severity === "medium"}
-                <AlertTriangle size={14} strokeWidth={2.5} />
-              {:else if a.severity === "low"}
-                <CheckCircle2 size={14} strokeWidth={2.5} />
-              {:else}
-                <Info size={14} strokeWidth={2.5} />
-              {/if}
-              <span class="alert-title">{a.title}</span>
-              {#if a.cta}
-                <span class="alert-cta">{a.cta} →</span>
-              {/if}
-            </a>
+            {#if a.link}
+              <a class="alert-chip sev-{a.severity}" href={a.link}>
+                {#if a.severity === "high"}
+                  <AlertCircle size={14} strokeWidth={2.5} />
+                {:else if a.severity === "medium"}
+                  <AlertTriangle size={14} strokeWidth={2.5} />
+                {:else if a.severity === "low"}
+                  <CheckCircle2 size={14} strokeWidth={2.5} />
+                {:else}
+                  <Info size={14} strokeWidth={2.5} />
+                {/if}
+                <span class="alert-title">{a.title}</span>
+                {#if a.cta}
+                  <span class="alert-cta">{a.cta} →</span>
+                {/if}
+              </a>
+            {:else}
+              <span class="alert-chip sev-{a.severity} no-link">
+                {#if a.severity === "high"}
+                  <AlertCircle size={14} strokeWidth={2.5} />
+                {:else if a.severity === "medium"}
+                  <AlertTriangle size={14} strokeWidth={2.5} />
+                {:else if a.severity === "low"}
+                  <CheckCircle2 size={14} strokeWidth={2.5} />
+                {:else}
+                  <Info size={14} strokeWidth={2.5} />
+                {/if}
+                <span class="alert-title">{a.title}</span>
+              </span>
+            {/if}
           {/each}
         </div>
       {/if}
@@ -923,6 +934,7 @@
   }
   .alert-chip:hover { transform: translateY(-1px); box-shadow: 0 2px 6px rgba(0,0,0,0.06); }
   .alert-chip.no-link { cursor: default; }
+  .alert-chip.no-link:hover { transform: none; box-shadow: none; }
   .alert-chip.sev-high { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
   .alert-chip.sev-medium { background: #fffbeb; border-color: #fde68a; color: #92400e; }
   .alert-chip.sev-low { background: #f0fdf4; border-color: #86efac; color: #166534; }

@@ -1,5 +1,6 @@
 <script>
   import { onMount, onDestroy } from "svelte";
+  import { fade } from "svelte/transition";
   import {
     BarChart3,
     Trophy,
@@ -288,8 +289,14 @@
             Updated {new Date(summary.generated_at).toLocaleTimeString()}
           </span>
         {/if}
-        <button class="icon-btn" on:click={refreshAll} title="Refresh" type="button">
-          <RefreshCw size={16} class:spin={loading} />
+        <button
+          class="icon-btn"
+          on:click={refreshAll}
+          title="Refresh"
+          aria-label="Refresh insights"
+          type="button"
+        >
+          <RefreshCw size={16} class={loading ? "spin" : ""} />
         </button>
       </div>
     </div>
@@ -402,17 +409,19 @@
               class="icon-btn small"
               on:click={fetchPriceChanges}
               title="Refresh price changes"
+              aria-label="Refresh price changes"
               type="button"
             >
-              <RefreshCw size={14} class:spin={priceChangesLoading} />
+              <RefreshCw size={14} class={priceChangesLoading ? "spin" : ""} />
             </button>
             <button
               class="icon-btn small"
               on:click={() => toggle("price")}
               title="Toggle section"
+              aria-label="Toggle price changes section"
               type="button"
             >
-              <ChevronDown size={14} class:rotated={!openSections.price} />
+              <ChevronDown size={14} class={!openSections.price ? "rotated" : ""} />
             </button>
           </div>
         </div>
@@ -515,9 +524,10 @@
           <button
             class="icon-btn small"
             on:click={() => toggle("top")}
+            aria-label="Toggle top products section"
             type="button"
           >
-            <ChevronDown size={14} class:rotated={!openSections.top} />
+            <ChevronDown size={14} class={!openSections.top ? "rotated" : ""} />
           </button>
         </div>
         {#if openSections.top}
@@ -564,9 +574,10 @@
           <button
             class="icon-btn small"
             on:click={() => toggle("category")}
+            aria-label="Toggle category performance section"
             type="button"
           >
-            <ChevronDown size={14} class:rotated={!openSections.category} />
+            <ChevronDown size={14} class={!openSections.category ? "rotated" : ""} />
           </button>
         </div>
         {#if openSections.category}
@@ -625,17 +636,19 @@
               class="icon-btn small"
               on:click={fetchMarketBasket}
               title="Refresh"
+              aria-label="Refresh market basket"
               type="button"
             >
-              <RefreshCw size={14} class:spin={marketBasketLoading} />
+              <RefreshCw size={14} class={marketBasketLoading ? "spin" : ""} />
             </button>
             <button
               class="icon-btn small"
               on:click={() => toggle("marketBasket")}
               title="Toggle section"
+              aria-label="Toggle market basket section"
               type="button"
             >
-              <ChevronDown size={14} class:rotated={!openSections.marketBasket} />
+              <ChevronDown size={14} class={!openSections.marketBasket ? "rotated" : ""} />
             </button>
           </div>
         </div>
@@ -703,9 +716,10 @@
           <button
             class="icon-btn small"
             on:click={() => toggle("margins")}
+            aria-label="Toggle profit margins section"
             type="button"
           >
-            <ChevronDown size={14} class:rotated={!openSections.margins} />
+            <ChevronDown size={14} class={!openSections.margins ? "rotated" : ""} />
           </button>
         </div>
         {#if openSections.margins}
@@ -768,14 +782,14 @@
 
             {#if marginPageCount > 1}
               <div class="pagination">
-                <button class="page-btn" on:click={prevMargin} disabled={marginPage === 0} type="button" aria-label="Previous">
+                <button class="page-btn" on:click={prevMargin} disabled={marginPage === 0} type="button" aria-label="Previous page">
                   <ChevronLeft size={16} />
                 </button>
                 <span class="page-info">
                   {marginPage * PAGE_SIZE + 1}–{Math.min((marginPage + 1) * PAGE_SIZE, margins.length)}
                   of {margins.length}
                 </span>
-                <button class="page-btn" on:click={nextMargin} disabled={marginPage >= marginPageCount - 1} type="button" aria-label="Next">
+                <button class="page-btn" on:click={nextMargin} disabled={marginPage >= marginPageCount - 1} type="button" aria-label="Next page">
                   <ChevronRight size={16} />
                 </button>
               </div>
@@ -794,9 +808,10 @@
           <button
             class="icon-btn small"
             on:click={() => toggle("peak")}
+            aria-label="Toggle peak hours section"
             type="button"
           >
-            <ChevronDown size={14} class:rotated={!openSections.peak} />
+            <ChevronDown size={14} class={!openSections.peak ? "rotated" : ""} />
           </button>
         </div>
         {#if openSections.peak}
@@ -826,9 +841,10 @@
           <button
             class="icon-btn small"
             on:click={() => toggle("expenses")}
+            aria-label="Toggle expenses section"
             type="button"
           >
-            <ChevronDown size={14} class:rotated={!openSections.expenses} />
+            <ChevronDown size={14} class={!openSections.expenses ? "rotated" : ""} />
           </button>
         </div>
         {#if openSections.expenses}
@@ -864,14 +880,14 @@
 
             {#if expensePageCount > 1}
               <div class="pagination">
-                <button class="page-btn" on:click={prevExpense} disabled={expensePage === 0} type="button" aria-label="Previous">
+                <button class="page-btn" on:click={prevExpense} disabled={expensePage === 0} type="button" aria-label="Previous page">
                   <ChevronLeft size={16} />
                 </button>
                 <span class="page-info">
                   {expensePage * PAGE_SIZE + 1}–{Math.min((expensePage + 1) * PAGE_SIZE, expenses.length)}
                   of {expenses.length}
                 </span>
-                <button class="page-btn" on:click={nextExpense} disabled={expensePage >= expensePageCount - 1} type="button" aria-label="Next">
+                <button class="page-btn" on:click={nextExpense} disabled={expensePage >= expensePageCount - 1} type="button" aria-label="Next page">
                   <ChevronRight size={16} />
                 </button>
               </div>
@@ -894,10 +910,12 @@
 
   {#if drilldownCategory}
     {#key drilldownCategory}
-      <ExpenseDrilldownModal
-        category={drilldownCategory}
-        on:close={closeDrilldown}
-      />
+      <div transition:fade={{ duration: 120 }}>
+        <ExpenseDrilldownModal
+          category={drilldownCategory}
+          on:close={closeDrilldown}
+        />
+      </div>
     {/key}
   {/if}
 </Layout>
