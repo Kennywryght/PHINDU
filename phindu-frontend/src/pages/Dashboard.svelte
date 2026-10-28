@@ -43,7 +43,6 @@
   let currentSession = null;
   let sessionSummary = null;
 
-  let today = null;
   let health = null;
   let focus = [];
   let deltas = null;
@@ -63,7 +62,7 @@
   let expenseBreakdown = null;
   let goodNews = [];
 
-  // Comparison period (was hardcoded to day)
+  // Comparison period
   const DELTA_OPTIONS = [
     ["day", "Day"],
     ["week", "Week"],
@@ -111,12 +110,19 @@
     }
   }
 
-  // Human label for the current comparison period
   $: deltaLabel =
     deltaPeriod === "day" ? "yesterday" :
     deltaPeriod === "week" ? "last week" :
     deltaPeriod === "month" ? "last month" :
     "last year";
+
+  // Computed session profit (revenue - cost - expenses) — sourced from
+  // the live summary so it's always in sync with the drawer.
+  $: sessionProfit = sessionSummary
+    ? Number(sessionSummary.sales.total_sales || 0)
+      - Number(sessionSummary.expenses.total || 0)
+      - Number(sessionSummary.sales.cogs || 0)
+    : 0;
 
   async function loadDashboard() {
     loading = loading && !data.session_id;
@@ -125,7 +131,6 @@
       const [
         sessionRes,
         trendRes,
-        todayRes,
         healthRes,
         focusRes,
         deltaRes,
@@ -143,7 +148,6 @@
       ] = await Promise.all([
         API.get("/sessions/current").catch(() => ({ data: {} })),
         API.get(`/analytics/revenue-trend?days=${trendDays}`),
-        API.get("/dashboard/today"),
         API.get("/dashboard/health-score"),
         API.get("/dashboard/focus"),
         API.get(`/dashboard/metric-deltas?period=${deltaPeriod}`).catch(() => ({
@@ -184,7 +188,6 @@
 
       data = Array.isArray(dashRes.data) ? dashRes.data[0] : dashRes.data;
       chartData = trendRes.data;
-      today = todayRes.data;
       health = healthRes.data;
       focus = focusRes.data?.items || [];
       deltas = deltaRes.data;
@@ -201,7 +204,6 @@
 
       willRunOut = runOutRes.data?.products || [];
 
-      // Compute missing percentages client-side so we ALWAYS show a real %
       profitByCategory = (catRes.data?.categories || []).map((c) => {
         if (c.share_percent == null) {
           const total = (catRes.data?.categories || []).reduce(
@@ -230,8 +232,8 @@
               c.percent != null
                 ? c.percent
                 : total > 0
-                ? Number(((c.total || 0) / total) * 100).toFixed(1)
-                : "0.0",
+                ? Number(((c.total || 0) / total) * 100).toFixed(2)
+                : "0.00",
           })),
         };
       } else {
@@ -419,6 +421,56 @@
     </div>
   {:else}
     <div class="dashboard">
+      <!-- ── SESSION SUMMARY (moved to top when a session is open) ── -->
+      {#if sessionSummary}
+        <div class="session-summary-card" class:active-session={sessionSummary.is_active}>
+          <div class="ss-header">
+            <div class="ss-title-wrap">
+              <Wallet size={18} strokeWidth={2} />
+              <span>{sessionSummary.is_active ? "Current session" : "Last session summary"}</span>
+            </div>
+            {#if sessionSummary.opened_at}
+              <span class="ss-time">
+                Opened {new Date(sessionSummary.opened_at).toLocaleTimeString()}
+                {#if sessionSummary.closed_at}
+                  · Closed {new Date(sessionSummary.closed_at).toLocaleTimeString()}
+                {/if}
+              </span>
+            {/if}
+          </div>
+          <div class="ss-grid">
+            <div class="ss-cell">
+              <span class="ss-label">Sales</span>
+              <span class="ss-value">{sessionSummary.sales.total_count}</span>
+            </div>
+            <div class="ss-cell">
+              <span class="ss-label">Revenue</span>
+              <span class="ss-value">MWK {formatMoney(sessionSummary.sales.total_sales)}</span>
+            </div>
+            <div class="ss-cell">
+              <span class="ss-label">Cash sales</span>
+              <span class="ss-value">MWK {formatMoney(sessionSummary.sales.cash_sales)}</span>
+            </div>
+            <div class="ss-cell">
+              <span class="ss-label">Expenses</span>
+              <span class="ss-value">MWK {formatMoney(sessionSummary.expenses.total)}</span>
+            </div>
+            <div class="ss-cell profit">
+              <span class="ss-label">Profit</span>
+              <span class="ss-value">
+                MWK {formatMoney(sessionProfit)}
+              </span>
+            </div>
+            <div class="ss-cell highlight">
+              <span class="ss-label">Expected in drawer</span>
+              <span class="ss-value">
+                MWK {formatMoney(sessionSummary.cash_drawer.expected_in_drawer)}
+              </span>
+            </div>
+          </div>
+        </div>
+      {/if}
+
       <!-- ── Alerts strip ── -->
       {#if alerts.length > 0}
         <div class="alerts-strip">
@@ -470,50 +522,6 @@
             Showing data for session opened
             <strong>{new Date(currentSession.opened_at).toLocaleString()}</strong>
           </span>
-        </div>
-      {/if}
-
-      <!-- ── Session summary card ── -->
-      {#if sessionSummary}
-        <div class="session-summary-card">
-          <div class="ss-header">
-            <div class="ss-title-wrap">
-              <Wallet size={18} strokeWidth={2} />
-              <span>{sessionSummary.is_active ? "Current session" : "Last session summary"}</span>
-            </div>
-            {#if sessionSummary.opened_at}
-              <span class="ss-time">
-                Opened {new Date(sessionSummary.opened_at).toLocaleTimeString()}
-                {#if sessionSummary.closed_at}
-                  · Closed {new Date(sessionSummary.closed_at).toLocaleTimeString()}
-                {/if}
-              </span>
-            {/if}
-          </div>
-          <div class="ss-grid">
-            <div class="ss-cell">
-              <span class="ss-label">Sales</span>
-              <span class="ss-value">{sessionSummary.sales.total_count}</span>
-            </div>
-            <div class="ss-cell">
-              <span class="ss-label">Revenue</span>
-              <span class="ss-value">MWK {formatMoney(sessionSummary.sales.total_sales)}</span>
-            </div>
-            <div class="ss-cell">
-              <span class="ss-label">Cash sales</span>
-              <span class="ss-value">MWK {formatMoney(sessionSummary.sales.cash_sales)}</span>
-            </div>
-            <div class="ss-cell">
-              <span class="ss-label">Expenses</span>
-              <span class="ss-value">MWK {formatMoney(sessionSummary.expenses.total)}</span>
-            </div>
-            <div class="ss-cell highlight">
-              <span class="ss-label">Expected in drawer</span>
-              <span class="ss-value">
-                MWK {formatMoney(sessionSummary.cash_drawer.expected_in_drawer)}
-              </span>
-            </div>
-          </div>
         </div>
       {/if}
 
@@ -608,34 +616,6 @@
         </div>
       {/if}
 
-      <!-- ── Today at a glance ── -->
-      {#if today}
-        <div class="today-strip">
-          <div class="today-cell">
-            <span class="today-label">Today Revenue</span>
-            <span class="today-value">MWK {formatMoney(today.revenue)}</span>
-          </div>
-          <div class="today-cell">
-            <span class="today-label">Sales</span>
-            <span class="today-value">{today.sales_count}</span>
-          </div>
-          <div class="today-cell">
-            <span class="today-label">Profit</span>
-            <span class="today-value">MWK {formatMoney(today.profit)}</span>
-          </div>
-          <div class="today-cell" class:warning={today.low_stock_count > 0}>
-            <span class="today-label">Low Stock</span>
-            <span class="today-value">
-              {#if today.low_stock_count > 0}
-                <AlertTriangle size={14} strokeWidth={2} /> {today.low_stock_count}
-              {:else}
-                0
-              {/if}
-            </span>
-          </div>
-        </div>
-      {/if}
-
       <!-- ── Today's Focus ── -->
       {#if focus.length > 0}
         <div class="focus-card">
@@ -658,7 +638,7 @@
         </div>
       {/if}
 
-      <!-- ── Comparison period toggle (drives MONEY + VOLUME deltas) ── -->
+      <!-- ── Comparison period toggle ── -->
       <div class="compare-bar">
         <span class="compare-label">Compare against</span>
         <div class="period-tabs" role="tablist" aria-label="Comparison period">
@@ -851,8 +831,10 @@
                     {#if p.days_left != null}
                       · runs out in ~{p.days_left} day{p.days_left === 1 ? "" : "s"}
                     {/if}
-                    {#if p.recommended_order_qty}
+                    {#if p.recommended_order_qty != null}
                       · suggested order: <strong>{p.recommended_order_qty}</strong>
+                    {:else if p.suggested_reorder != null}
+                      · suggested order: <strong>{p.suggested_reorder}</strong>
                     {/if}
                   </span>
                 </div>
@@ -1078,6 +1060,77 @@
     font-weight: 500;
   }
 
+  /* ── Session summary (hero when active) ── */
+  .session-summary-card {
+    background: linear-gradient(135deg, rgba(59, 130, 246, 0.05) 0%, var(--surface, #fff) 70%);
+    border: 1px solid #bfdbfe;
+    border-radius: 12px;
+    padding: 1rem 1.1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  .session-summary-card.active-session {
+    background: linear-gradient(135deg, rgba(15, 107, 62, 0.08) 0%, var(--surface, #fff) 70%);
+    border-color: #86efac;
+    box-shadow: 0 2px 8px rgba(15, 107, 62, 0.08);
+  }
+  .ss-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  .ss-title-wrap {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 700;
+    color: var(--text, #111827);
+    font-size: 0.98rem;
+  }
+  .ss-title-wrap svg { color: #1e40af; }
+  .active-session .ss-title-wrap svg { color: #166534; }
+  .ss-time { font-size: 0.75rem; color: var(--text-light, #6b7280); }
+  .ss-grid {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 0.5rem;
+  }
+  .ss-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    padding: 0.55rem 0.6rem;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 9px;
+    min-width: 0;
+  }
+  .ss-cell.profit {
+    background: #f0fdf4;
+    border-color: #86efac;
+  }
+  .ss-cell.profit .ss-value { color: #166534; }
+  .ss-cell.highlight { background: #eff6ff; border-color: #bfdbfe; }
+  .ss-label {
+    font-size: 0.65rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--text-light, #6b7280);
+  }
+  .ss-value {
+    font-size: 0.88rem;
+    font-weight: 700;
+    color: var(--text, #111827);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ss-cell.highlight .ss-value { color: #1e40af; }
+
   /* ── Alerts strip ── */
   .alerts-strip {
     display: flex;
@@ -1111,7 +1164,7 @@
   .alert-title { font-weight: 600; }
   .alert-cta { font-size: 0.75rem; font-weight: 700; opacity: 0.85; }
 
-  /* ── Comparison bar (new) ── */
+  /* ── Compare bar ── */
   .compare-bar {
     display: flex;
     align-items: center;
@@ -1134,62 +1187,6 @@
     color: var(--text-light, #6b7280);
     margin-left: auto;
   }
-
-  /* ── Session summary ── */
-  .session-summary-card {
-    background: linear-gradient(135deg, rgba(59, 130, 246, 0.05) 0%, var(--surface, #fff) 70%);
-    border: 1px solid #bfdbfe;
-    border-radius: 12px;
-    padding: 1rem 1.1rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-  }
-  .ss-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-  }
-  .ss-title-wrap {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    font-weight: 600;
-    color: var(--text, #111827);
-    font-size: 0.95rem;
-  }
-  .ss-title-wrap svg { color: #1e40af; }
-  .ss-time { font-size: 0.75rem; color: var(--text-light, #6b7280); }
-  .ss-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.5rem; }
-  .ss-cell {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-    padding: 0.55rem 0.6rem;
-    background: var(--surface, #fff);
-    border: 1px solid var(--border, #e5e7eb);
-    border-radius: 9px;
-    min-width: 0;
-  }
-  .ss-cell.highlight { background: #eff6ff; border-color: #bfdbfe; }
-  .ss-label {
-    font-size: 0.65rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
-    color: var(--text-light, #6b7280);
-  }
-  .ss-value {
-    font-size: 0.88rem;
-    font-weight: 700;
-    color: var(--text, #111827);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .ss-cell.highlight .ss-value { color: #1e40af; }
 
   /* ── Session info ── */
   .session-info {
@@ -1351,23 +1348,6 @@
   .hc-chip-max { font-size: 0.7rem; color: var(--text-light, #6b7280); font-weight: 500; }
   .hc-bar { width: 100%; height: 5px; background: var(--surface, #fff); border-radius: 3px; overflow: hidden; border: 1px solid var(--border, #e5e7eb); }
   .hc-bar-fill { height: 100%; background: var(--primary, #0f6b3e); border-radius: 3px; transition: width 0.4s ease; }
-
-  .today-strip {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 0.5rem;
-    padding: 0.75rem 0.85rem;
-    background: var(--surface, #fff);
-    border: 1px solid var(--border, #e5e7eb);
-    border-radius: 12px;
-    box-sizing: border-box;
-    width: 100%;
-  }
-  .today-cell { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; padding: 0.35rem 0.4rem; border-radius: 8px; transition: background 0.15s; }
-  .today-cell.warning { background: rgba(245, 158, 11, 0.08); }
-  .today-label { font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; color: var(--text-light, #6b7280); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .today-value { font-size: 0.95rem; font-weight: 700; color: var(--text, #111827); display: inline-flex; align-items: center; gap: 0.2rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .today-cell.warning .today-value { color: #b45309; }
 
   .focus-card { background: var(--surface, #fff); border: 1px solid var(--border, #e5e7eb); border-radius: 12px; padding: 1rem 1.1rem; box-sizing: border-box; width: 100%; }
   .focus-header { display: flex; align-items: center; gap: 0.5rem; margin: 0 0 0.75rem; font-size: 1rem; font-weight: 600; color: var(--text, #111827); }
@@ -1673,8 +1653,7 @@
     .chart { height: 170px; gap: 0.35rem; }
     .bar-value { font-size: 0.6rem; }
     .bar-label { font-size: 0.68rem; }
-    .today-strip { grid-template-columns: repeat(2, 1fr); row-gap: 0.6rem; }
-    .ss-grid { grid-template-columns: repeat(2, 1fr); }
+    .ss-grid { grid-template-columns: repeat(3, 1fr); }
     .debt-buckets { grid-template-columns: repeat(2, 1fr); }
     .sess-kpis { grid-template-columns: repeat(2, 1fr); }
     .sess-chart { height: 160px; gap: 0.35rem; }
@@ -1690,9 +1669,6 @@
     .health-components { grid-template-columns: 1fr 1fr; }
     .hc-chip { padding: 0.45rem 0.55rem; }
     .hc-chip-label { font-size: 0.65rem; }
-    .today-strip { padding: 0.6rem 0.7rem; gap: 0.4rem 0.5rem; }
-    .today-value { font-size: 0.85rem; }
-    .today-label { font-size: 0.65rem; }
     .focus-card { padding: 0.85rem 0.9rem; }
     .focus-title { font-size: 0.85rem; }
     .focus-detail, .focus-hint { font-size: 0.75rem; }
@@ -1729,6 +1705,6 @@
     .chart { height: 120px; gap: 0.2rem; }
     .bar-label { font-size: 0.6rem; }
     .health-components { grid-template-columns: 1fr; }
-    .ss-grid { grid-template-columns: 1fr; }
+    .ss-grid { grid-template-columns: 1fr 1fr; }
   }
 </style>
