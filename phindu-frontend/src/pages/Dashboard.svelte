@@ -63,6 +63,16 @@
   let expenseBreakdown = null;
   let goodNews = [];
 
+  // Comparison period (was hardcoded to day)
+  const DELTA_OPTIONS = [
+    ["day", "Day"],
+    ["week", "Week"],
+    ["month", "Month"],
+    ["year", "Year"],
+  ];
+  let deltaPeriod = "day";
+  let deltaLoading = false;
+
   const TREND_OPTIONS = [7, 14, 30];
   let trendDays = 7;
   let trendLoading = false;
@@ -101,6 +111,13 @@
     }
   }
 
+  // Human label for the current comparison period
+  $: deltaLabel =
+    deltaPeriod === "day" ? "yesterday" :
+    deltaPeriod === "week" ? "last week" :
+    deltaPeriod === "month" ? "last month" :
+    "last year";
+
   async function loadDashboard() {
     loading = loading && !data.session_id;
     error = null;
@@ -129,7 +146,14 @@
         API.get("/dashboard/today"),
         API.get("/dashboard/health-score"),
         API.get("/dashboard/focus"),
-        API.get("/dashboard/metric-deltas"),
+        API.get(`/dashboard/metric-deltas?period=${deltaPeriod}`).catch(() => ({
+          data: {
+            revenue: { current: 0, previous: 0, absolute: 0, percent: null },
+            profit: { current: 0, previous: 0, absolute: 0, percent: null },
+            expenses: { current: 0, previous: 0, absolute: 0, percent: null },
+            items_sold: { current: 0, previous: 0, absolute: 0, percent: null },
+          },
+        })),
         API.get(`/dashboard/sessions-trend?days=${sessionsDays}`).catch(() => ({
           data: { items: [], totals: null },
         })),
@@ -176,9 +200,44 @@
       slowMovers = slowRes.data?.products || [];
 
       willRunOut = runOutRes.data?.products || [];
-      profitByCategory = catRes.data?.categories || [];
+
+      // Compute missing percentages client-side so we ALWAYS show a real %
+      profitByCategory = (catRes.data?.categories || []).map((c) => {
+        if (c.share_percent == null) {
+          const total = (catRes.data?.categories || []).reduce(
+            (s, x) => s + Number(x.profit || 0),
+            0
+          );
+          return {
+            ...c,
+            share_percent:
+              total > 0 ? Number(((c.profit || 0) / total) * 100).toFixed(1) : "0.0",
+          };
+        }
+        return c;
+      });
+
       inventoryValue = invRes.data;
-      expenseBreakdown = expRes.data;
+
+      if (expRes.data?.categories) {
+        const cats = expRes.data.categories;
+        const total = cats.reduce((s, c) => s + Number(c.total || 0), 0);
+        expenseBreakdown = {
+          ...expRes.data,
+          categories: cats.map((c) => ({
+            ...c,
+            percent:
+              c.percent != null
+                ? c.percent
+                : total > 0
+                ? Number(((c.total || 0) / total) * 100).toFixed(1)
+                : "0.0",
+          })),
+        };
+      } else {
+        expenseBreakdown = expRes.data;
+      }
+
       goodNews = goodNewsRes.data?.items || [];
     } catch (err) {
       error = "Failed to load dashboard data";
@@ -186,6 +245,24 @@
     } finally {
       loading = false;
     }
+  }
+
+  async function loadDeltas() {
+    deltaLoading = true;
+    try {
+      const res = await API.get(`/dashboard/metric-deltas?period=${deltaPeriod}`);
+      deltas = res.data;
+    } catch (e) {
+      console.error(e);
+    } finally {
+      deltaLoading = false;
+    }
+  }
+
+  function setDeltaPeriod(p) {
+    if (deltaPeriod === p) return;
+    deltaPeriod = p;
+    loadDeltas();
   }
 
   async function loadTrend() {
@@ -378,7 +455,6 @@
         </div>
       {/if}
 
-      <!-- ── Good news + analytical cards (customerHealth removed) ── -->
       <InfoCards
         goodNews={goodNews}
         willRunOut={willRunOut}
@@ -472,7 +548,6 @@
             <div class="health-bar-fill" style="width: {health.score}%"></div>
           </div>
 
-          <!-- What-is-this toggle -->
           <button
             class="health-toggle"
             on:click={() => (showHealthExplainer = !showHealthExplainer)}
@@ -583,10 +658,32 @@
         </div>
       {/if}
 
+      <!-- ── Comparison period toggle (drives MONEY + VOLUME deltas) ── -->
+      <div class="compare-bar">
+        <span class="compare-label">Compare against</span>
+        <div class="period-tabs" role="tablist" aria-label="Comparison period">
+          {#each DELTA_OPTIONS as [val, label]}
+            <button
+              type="button"
+              class="period-tab"
+              class:active={deltaPeriod === val}
+              on:click={() => setDeltaPeriod(val)}
+              aria-pressed={deltaPeriod === val}
+              disabled={deltaLoading}
+            >
+              {label}
+            </button>
+          {/each}
+        </div>
+        <span class="compare-hint">
+          {deltaLoading ? "Updating…" : `Showing % change vs ${deltaLabel}`}
+        </span>
+      </div>
+
       <!-- ── MONEY ── -->
       <h3 class="section-title">
         <Coins size={16} strokeWidth={2} /> Money
-        <span class="section-hint">vs yesterday</span>
+        <span class="section-hint">vs {deltaLabel}</span>
       </h3>
       <div class="metrics-grid">
         <MetricCard
@@ -614,7 +711,7 @@
       <!-- ── VOLUME ── -->
       <h3 class="section-title">
         <Package size={16} strokeWidth={2} /> Volume
-        <span class="section-hint">vs yesterday</span>
+        <span class="section-hint">vs {deltaLabel}</span>
       </h3>
       <div class="metrics-grid">
         <MetricCard
@@ -725,7 +822,7 @@
         {/if}
       </div>
 
-      <!-- ── Restock Planner (replaces the old Sales Heatmap) ── -->
+      <!-- ── Restock Planner ── -->
       <div class="restock-card">
         <div class="restock-header">
           <h3>
@@ -1013,6 +1110,30 @@
   .alert-chip.sev-info { background: #eff6ff; border-color: #bfdbfe; color: #1e40af; }
   .alert-title { font-weight: 600; }
   .alert-cta { font-size: 0.75rem; font-weight: 700; opacity: 0.85; }
+
+  /* ── Comparison bar (new) ── */
+  .compare-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 10px;
+    padding: 0.55rem 0.85rem;
+  }
+  .compare-label {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-light, #6b7280);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .compare-hint {
+    font-size: 0.75rem;
+    color: var(--text-light, #6b7280);
+    margin-left: auto;
+  }
 
   /* ── Session summary ── */
   .session-summary-card {
@@ -1374,7 +1495,7 @@
   .wd-main small { font-size: 0.65rem; font-weight: 500; color: var(--text-light, #6b7280); }
   .wd-sub { font-size: 0.68rem; color: var(--text-light, #6b7280); }
 
-  /* ── Restock Planner (replaces heatmap) ── */
+  /* ── Restock Planner ── */
   .restock-card {
     background: linear-gradient(135deg, rgba(239, 68, 68, 0.04), var(--surface, #fff) 70%);
     border: 1px solid #fecaca;
@@ -1557,6 +1678,7 @@
     .debt-buckets { grid-template-columns: repeat(2, 1fr); }
     .sess-kpis { grid-template-columns: repeat(2, 1fr); }
     .sess-chart { height: 160px; gap: 0.35rem; }
+    .compare-hint { margin-left: 0; width: 100%; }
   }
 
   @media (max-width: 480px) {
@@ -1598,6 +1720,8 @@
     .restock-card { padding: 0.85rem 0.9rem; }
     .he-comp-head { gap: 0.25rem; }
     .he-comp-points { width: 100%; margin-left: 0; margin-top: 0.25rem; text-align: center; }
+    .compare-bar { padding: 0.45rem 0.65rem; gap: 0.5rem; }
+    .compare-label { font-size: 0.7rem; }
   }
 
   @media (max-width: 360px) {

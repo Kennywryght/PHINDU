@@ -628,18 +628,47 @@ def get_cash_flow(
     }
 
 
-# ─── GET /metric-deltas ─────────────────────────────────────────
+# ─── GET /metric-deltas  ← CHANGED: now accepts `period` ────────
 
 
 @router.get("/metric-deltas")
 def get_metric_deltas(
+    period: str = Query("day", description="day | week | month | year"),
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
+    """
+    Deltas for Revenue, Profit, Expenses, Items Sold.
+
+    `period` decides what "current" vs "previous" window means:
+      - day   → today vs yesterday
+      - week  → last 7 days vs the 7 days before that
+      - month → last 30 days vs the 30 days before that
+      - year  → last 365 days vs the 365 days before that
+    """
     now = datetime.utcnow()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    tomorrow = today_start + timedelta(days=1)
-    yest_start = today_start - timedelta(days=1)
+
+    if period == "week":
+        cur_start = today_start - timedelta(days=6)
+        cur_end = now
+        prev_start = today_start - timedelta(days=13)
+        prev_end = today_start - timedelta(days=6)
+    elif period == "month":
+        cur_start = today_start - timedelta(days=29)
+        cur_end = now
+        prev_start = today_start - timedelta(days=59)
+        prev_end = today_start - timedelta(days=29)
+    elif period == "year":
+        cur_start = today_start - timedelta(days=364)
+        cur_end = now
+        prev_start = today_start - timedelta(days=729)
+        prev_end = today_start - timedelta(days=364)
+    else:  # day
+        cur_start = today_start
+        cur_end = today_start + timedelta(days=1)
+        prev_start = today_start - timedelta(days=1)
+        prev_end = today_start
 
     def _metrics(a: datetime, b: datetime) -> dict:
         fin = _revenue_and_profit_for_window(db, shop_id, a, b)
@@ -657,8 +686,8 @@ def get_metric_deltas(
             "items_sold": float(qty),
         }
 
-    t = _metrics(today_start, tomorrow)
-    y = _metrics(yest_start, today_start)
+    t = _metrics(cur_start, cur_end)
+    y = _metrics(prev_start, prev_end)
 
     def _delta(cur, prev):
         abs_d = cur - prev
@@ -675,6 +704,7 @@ def get_metric_deltas(
         }
 
     return {
+        "period": period,
         "revenue": _delta(t["revenue"], y["revenue"]),
         "profit": _delta(t["profit"], y["profit"]),
         "expenses": _delta(t["expenses"], y["expenses"]),
@@ -944,11 +974,6 @@ def get_debt_ageing(
 ):
     """
     Bucket outstanding customer credit by age of the oldest unpaid sale.
-
-    A customer's whole `total_credit` is bucketed by the age of the oldest
-    unpaid/partial sale they have.
-
-    Buckets: current (<7d), 7-14d, 15-30d, over 30d.
     """
     now = datetime.utcnow()
 
@@ -1009,12 +1034,6 @@ def get_slow_movers(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """
-    Products with stock on hand but very few / zero sales in the window.
-
-    Ranked by (stock_qty × purchase_price) descending — i.e. how much
-    cash is sitting idle.
-    """
     now = datetime.utcnow()
     start = now - timedelta(days=days)
 
@@ -1071,12 +1090,6 @@ def get_heatmap(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """
-    7×24 grid of sale counts by (weekday, hour).
-
-    Weekday 0 = Monday, 6 = Sunday.
-    Returns grid[row][col] where row is weekday (0..6), col is hour (0..23).
-    """
     now = datetime.utcnow()
     start = now - timedelta(days=days)
 
@@ -1095,7 +1108,7 @@ def get_heatmap(
     for (created_at,) in sales:
         if not created_at:
             continue
-        weekday = created_at.weekday()  # Monday=0
+        weekday = created_at.weekday()
         hour = created_at.hour
         grid[weekday][hour] += 1
 
@@ -1108,7 +1121,7 @@ def get_heatmap(
     }
 
 
-# ─── NEW: GET /sessions-trend ───────────────────────────────────
+# ─── GET /sessions-trend ────────────────────────────────────────
 
 
 @router.get("/sessions-trend")
@@ -1117,37 +1130,17 @@ def get_sessions_trend(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """
-    Per-day counts of sessions opened and sales made, for the last `days`.
-
-    Fills empty days with zeros so the frontend can render a continuous
-    bar chart without gaps.
-
-    Returns:
-        {
-          "window_days": int,
-          "items": [
-             { "date": "YYYY-MM-DD", "sessions": int, "sales": int, "revenue": float }
-             ...
-          ],
-          "totals": { "sessions": int, "sales": int, "revenue": float }
-        }
-    """
     now = datetime.utcnow()
-    # Start at midnight of (days-1) days ago → exactly `days` calendar days
-    # including today.
     start = (now - timedelta(days=days - 1)).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
     end = start + timedelta(days=days)
 
-    # Build a zeroed bucket for every day in range so the response is dense.
     buckets: dict[date, dict] = {}
     for i in range(days):
         d = (start + timedelta(days=i)).date()
         buckets[d] = {"date": d, "sessions": 0, "sales": 0, "revenue": 0.0}
 
-    # ── Sessions opened per day ──
     session_rows = (
         db.query(
             func.date(SessionModel.opened_at).label("d"),
@@ -1166,7 +1159,6 @@ def get_sessions_trend(
         if key in buckets:
             buckets[key]["sessions"] = int(row.cnt or 0)
 
-    # ── Sales (count + revenue) per day ──
     sale_rows = (
         db.query(
             func.date(Sale.created_at).label("d"),
@@ -1206,6 +1198,7 @@ def get_sessions_trend(
 
     return {"window_days": days, "items": items, "totals": totals}
 
+
 # ─── GET /will-run-out ──────────────────────────────────────────
 
 
@@ -1216,13 +1209,6 @@ def get_will_run_out(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """
-    Leaf products whose current stock will run out within the window,
-    based on avg daily sales over the last 30 days.
-
-    Returns: [{ id, name, unit, stock_qty, avg_daily_sales,
-                days_left, suggested_reorder }]
-    """
     now = datetime.utcnow()
     cutoff_30d = now - timedelta(days=30)
 
@@ -1259,7 +1245,6 @@ def get_will_run_out(
         days_left = (p.stock_qty or 0) / daily
         if days_left > days:
             continue
-        # suggest enough for 2 weeks, rounded up, min 1
         suggested = max(1, int(round(daily * 14)))
         rows.append({
             "id": p.id,
@@ -1284,13 +1269,6 @@ def get_profit_by_category(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """
-    Revenue, cost, profit and margin grouped by product category
-    over the window.
-
-    Returns: [{ category, revenue, cost, profit, margin_pct, items_sold }]
-    sorted by revenue desc.
-    """
     now = datetime.utcnow()
     start = now - timedelta(days=days)
 
@@ -1342,20 +1320,10 @@ def get_customer_health(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """
-    Customer retention signals for the window.
-
-    - repeat_rate: % of this window's sales that came from customers
-      who have ever bought more than once.
-    - new_customers: customers whose first ever sale falls in the window.
-    - at_risk: customers who bought >= 2 times historically but have
-      not bought in the last 30 days.
-    """
     now = datetime.utcnow()
     start = now - timedelta(days=days)
     cutoff_30d = now - timedelta(days=30)
 
-    # Sales in window that have a customer attached
     window_sales = (
         db.query(Sale.id, Sale.customer_id)
         .filter(
@@ -1368,7 +1336,6 @@ def get_customer_health(
         .all()
     )
 
-    # How many total sales per customer (ever) — for "repeat" check
     ever_counts = dict(
         db.query(Sale.customer_id, func.count(Sale.id))
         .filter(
@@ -1386,7 +1353,6 @@ def get_customer_health(
     )
     repeat_rate = (repeat_sales / total_window * 100) if total_window else 0.0
 
-    # New customers: first ever sale falls in the window
     first_sale_sub = (
         db.query(
             Sale.customer_id.label("cid"),
@@ -1410,7 +1376,6 @@ def get_customer_health(
         or 0
     )
 
-    # At-risk: >= 2 lifetime purchases, but none in last 30 days
     last_sale_sub = (
         db.query(
             Sale.customer_id.label("cid"),
@@ -1459,13 +1424,6 @@ def get_inventory_value(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """
-    Cash currently tied up in stock.
-
-    - value_at_cost: Σ stock_qty × purchase_price
-    - value_at_retail: Σ stock_qty × selling_price
-    - turnover: COGS last 90d / value_at_cost  (annualised × 4)
-    """
     now = datetime.utcnow()
 
     row = (
@@ -1491,7 +1449,6 @@ def get_inventory_value(
     value_at_retail = float(row.retail or 0)
     sku_count = int(row.count or 0)
 
-    # COGS last 90d for turnover
     cutoff_90d = now - timedelta(days=90)
     cogs_90d = (
         db.query(func.coalesce(func.sum(SaleItem.cost_price), 0))
@@ -1507,7 +1464,6 @@ def get_inventory_value(
     cogs_90d = float(cogs_90d)
 
     if value_at_cost > 0:
-        # quarterly turnover → annualise
         turnover_annual = (cogs_90d / value_at_cost) * 4
     else:
         turnover_annual = 0.0
@@ -1532,11 +1488,6 @@ def get_expense_breakdown(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """
-    Top expense categories in the window.
-
-    Returns: [{ category, total, count, share_pct }] sorted by total desc.
-    """
     now = datetime.utcnow()
     start = now - timedelta(days=days)
 
@@ -1584,10 +1535,6 @@ def get_good_news(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """
-    A short rotating list of positive facts. Up to 3 items.
-    If nothing positive exists, returns an empty list.
-    """
     now = datetime.utcnow()
     week_start = now - timedelta(days=7)
     prev_start = now - timedelta(days=14)
@@ -1595,29 +1542,6 @@ def get_good_news(
 
     items: list[dict] = []
 
-    # 1. Best weekday in the last 4 weeks vs the previous 4 weeks
-    def _weekday_revenue(start, end):
-        rows = (
-            db.query(
-                func.strftime("%w", Sale.created_at).label("wd"),
-                func.coalesce(func.sum(Sale.total_amount), 0).label("rev"),
-            )
-            .filter(
-                Sale.shop_id == shop_id,
-                Sale.created_at >= start,
-                Sale.created_at < end,
-                Sale.is_voided == False,
-            )
-            .group_by(func.strftime("%w", Sale.created_at))
-            .all()
-        )
-        return {str(r.wd): float(r.rev or 0) for r in rows}
-
-    # NOTE: strftime is SQLite-specific. If you migrate to Postgres,
-    # replace with func.extract("dow", Sale.created_at).
-    # Keeping it simple here to match your SQLite dev DB.
-
-    # 2. Revenue up vs last week
     cur = _revenue_and_profit_for_window(db, shop_id, week_start, now)
     prev = _revenue_and_profit_for_window(db, shop_id, prev_start, week_start)
     if prev["revenue"] > 0 and cur["revenue"] > prev["revenue"]:
@@ -1628,7 +1552,6 @@ def get_good_news(
                 "text": f"Revenue up {pct:.0f}% vs last week",
             })
 
-    # 3. Profit margin improved vs last month
     cur_m = _revenue_and_profit_for_window(db, shop_id, month_start, now)
     if cur_m["revenue"] > 0:
         margin_now = (cur_m["profit"] / cur_m["revenue"]) * 100
@@ -1643,7 +1566,6 @@ def get_good_news(
                     "text": f"Profit margin up {margin_now - margin_prev:.1f} pts this month",
                 })
 
-    # 4. New repeat customers this week
     first_sale_sub = (
         db.query(
             Sale.customer_id.label("cid"),
@@ -1672,7 +1594,6 @@ def get_good_news(
             "text": f"{repeat_new} new customer{'s' if repeat_new != 1 else ''} already came back this week",
         })
 
-    # 5. No overdue debtors
     cutoff_14d = now - timedelta(days=14)
     overdue_count = 0
     for c in (
