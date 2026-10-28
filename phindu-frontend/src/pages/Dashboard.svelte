@@ -9,6 +9,7 @@
     AlertCircle,
     CheckCircle2,
     Info,
+    HelpCircle,
     ArrowUpRight,
     ArrowDownRight,
     Minus,
@@ -18,6 +19,8 @@
     Package,
     Users,
     Store,
+    ChevronDown,
+    ChevronUp,
   } from "lucide-svelte";
   import Layout from "../components/Layout.svelte";
   import MetricCard from "../components/MetricCard.svelte";
@@ -51,29 +54,28 @@
   let debtAgeing = null;
   let slowMovers = [];
 
-  let heatmap = null;
-  const HEATMAP_OPTIONS = [14, 30, 90];
-  let heatmapDays = 30;
-  let heatmapLoading = false;
+  // Restock planner (replaces heatmap)
+  let willRunOut = [];
+
+  // Info cards
+  let profitByCategory = [];
+  let inventoryValue = null;
+  let expenseBreakdown = null;
+  let goodNews = [];
 
   const TREND_OPTIONS = [7, 14, 30];
   let trendDays = 7;
   let trendLoading = false;
 
-  // Sessions & Sales trend (replaces old cash-flow card)
+  // Sessions & Sales trend
   let sessionsTrend = [];
   let sessionsTrendTotals = null;
   let sessionsLoading = false;
   let sessionsDays = 7;
   const SESSION_OPTIONS = [7, 14, 30];
 
-  // New informational cards
-  let willRunOut = [];
-  let profitByCategory = [];
-  let customerHealth = null;
-  let inventoryValue = null;
-  let expenseBreakdown = null;
-  let goodNews = [];
+  // Business health explainer toggle
+  let showHealthExplainer = false;
 
   let pollId = null;
 
@@ -116,10 +118,8 @@
         topCustRes,
         debtRes,
         slowRes,
-        heatmapRes,
         runOutRes,
         catRes,
-        custHealthRes,
         invRes,
         expRes,
         goodNewsRes,
@@ -138,10 +138,8 @@
         API.get("/dashboard/top-customers?days=7&limit=5").catch(() => ({ data: { customers: [] } })),
         API.get("/dashboard/debt-ageing").catch(() => ({ data: null })),
         API.get("/dashboard/slow-movers?days=30&limit=5").catch(() => ({ data: { products: [] } })),
-        API.get(`/dashboard/heatmap?days=${heatmapDays}`).catch(() => ({ data: null })),
         API.get("/dashboard/will-run-out?days=14&limit=5").catch(() => ({ data: { products: [] } })),
         API.get("/dashboard/profit-by-category?days=30").catch(() => ({ data: { categories: [] } })),
-        API.get("/dashboard/customer-health?days=7").catch(() => ({ data: null })),
         API.get("/dashboard/inventory-value").catch(() => ({ data: null })),
         API.get("/dashboard/expense-breakdown?days=30").catch(() => ({ data: null })),
         API.get("/dashboard/good-news").catch(() => ({ data: { items: [] } })),
@@ -176,11 +174,9 @@
       topCustomers = topCustRes.data?.customers || [];
       debtAgeing = debtRes.data;
       slowMovers = slowRes.data?.products || [];
-      heatmap = heatmapRes.data;
 
       willRunOut = runOutRes.data?.products || [];
       profitByCategory = catRes.data?.categories || [];
-      customerHealth = custHealthRes.data;
       inventoryValue = invRes.data;
       expenseBreakdown = expRes.data;
       goodNews = goodNewsRes.data?.items || [];
@@ -210,24 +206,6 @@
     loadTrend();
   }
 
-  async function fetchHeatmap() {
-    heatmapLoading = true;
-    try {
-      const res = await API.get(`/dashboard/heatmap?days=${heatmapDays}`);
-      heatmap = res.data;
-    } catch (e) {
-      console.error(e);
-    } finally {
-      heatmapLoading = false;
-    }
-  }
-
-  function setHeatmapDays(n) {
-    if (heatmapDays === n) return;
-    heatmapDays = n;
-    fetchHeatmap();
-  }
-
   async function loadSessionsTrend() {
     sessionsLoading = true;
     try {
@@ -245,11 +223,6 @@
     if (sessionsDays === n) return;
     sessionsDays = n;
     loadSessionsTrend();
-  }
-
-  function heatmapIntensity(value, max) {
-    if (!max || !value) return 0;
-    return Math.min(1, Math.sqrt(value / max));
   }
 
   function formatDate(isoString) {
@@ -276,12 +249,6 @@
   $: healthDelta = health?.delta ?? 0;
   $: healthIcon = healthDelta > 0 ? ArrowUpRight : healthDelta < 0 ? ArrowDownRight : Minus;
 
-  $: heatmapMax = heatmap?.max ?? 0;
-  $: heatmapTotal = heatmap
-    ? heatmap.grid.flat().reduce((s, v) => s + v, 0)
-    : 0;
-
-  // ── Sessions chart derived values ──
   $: maxDayValue = sessionsTrend.length
     ? Math.max(...sessionsTrend.map((d) => Math.max(d.sessions, d.sales)), 1)
     : 1;
@@ -312,28 +279,44 @@
     if (!c) return [];
     return [
       {
+        key: "profit_margin",
         label: "Profit margin",
         points: c.profit_margin_points ?? 0,
         max: 40,
-        hint: `Margin ${c.profit_margin_pct ?? 0}% — 40 pts at ≥30%, 25 at ≥15%, 10 at >0%`,
+        value: `${c.profit_margin_pct ?? 0}%`,
+        rule: "40 pts if ≥30% · 25 if ≥15% · 10 if >0% · 0 if losing money",
+        explainer:
+          "Of every 100 MWK you sell, how much stays as profit after paying for the goods and daily expenses. Higher is better — it means you're pricing right.",
       },
       {
+        key: "cash_flow",
         label: "Cash flow",
         points: c.cash_flow_points ?? 0,
         max: 30,
-        hint: `Profit stays positive as share of revenue (${Math.round((c.cash_flow_ratio ?? 0) * 100)}%)`,
+        value: `${Math.round((c.cash_flow_ratio ?? 0) * 100)}%`,
+        rule: "Score scales with profit as a share of revenue",
+        explainer:
+          "Whether money is actually flowing in vs going out. If profit stays a healthy fraction of revenue, cash flow is good. If revenue is high but profit is close to zero, this stays low even if the margin looks okay.",
       },
       {
+        key: "stock_health",
         label: "Stock health",
         points: c.stock_points ?? 0,
         max: 20,
-        hint: `${c.healthy_products ?? 0} of ${c.total_products ?? 0} products healthy · ${c.low_stock ?? 0} low`,
+        value: `${c.healthy_products ?? 0}/${c.total_products ?? 0}`,
+        rule: `Falls as more products go below their low-stock threshold (${c.low_stock ?? 0} low right now)`,
+        explainer:
+          "Percentage of your products that have healthy stock. If too many products are low or out of stock, you're losing sales you could have made.",
       },
       {
+        key: "debt_collection",
         label: "Debt collection",
         points: c.debt_points ?? 0,
         max: 10,
-        hint: `${Math.round((c.collection_ratio ?? 1) * 100)}% of 7-day credit sales collected`,
+        value: `${Math.round((c.collection_ratio ?? 1) * 100)}%`,
+        rule: "10 pts if you collect 100% of 7-day credit sales, scaling down from there",
+        explainer:
+          "How much of the credit you extended in the last week has actually come back. If customers who bought on credit haven't paid, this drops — and so does your cash flow.",
       },
     ];
   })();
@@ -375,9 +358,7 @@
                   <Info size={14} strokeWidth={2.5} />
                 {/if}
                 <span class="alert-title">{a.title}</span>
-                {#if a.cta}
-                  <span class="alert-cta">{a.cta} →</span>
-                {/if}
+                {#if a.cta}<span class="alert-cta">{a.cta} →</span>{/if}
               </a>
             {:else}
               <span class="alert-chip sev-{a.severity} no-link">
@@ -397,12 +378,11 @@
         </div>
       {/if}
 
-      <!-- ── Good news + analytical cards ── -->
+      <!-- ── Good news + analytical cards (customerHealth removed) ── -->
       <InfoCards
         goodNews={goodNews}
         willRunOut={willRunOut}
         profitByCategory={profitByCategory}
-        customerHealth={customerHealth}
         inventoryValue={inventoryValue}
         expenseBreakdown={expenseBreakdown}
       />
@@ -492,10 +472,53 @@
             <div class="health-bar-fill" style="width: {health.score}%"></div>
           </div>
 
+          <!-- What-is-this toggle -->
+          <button
+            class="health-toggle"
+            on:click={() => (showHealthExplainer = !showHealthExplainer)}
+            type="button"
+            aria-expanded={showHealthExplainer}
+          >
+            {#if showHealthExplainer}
+              <ChevronUp size={14} /> Hide explanation
+            {:else}
+              <HelpCircle size={14} /> What is Business Health?
+            {/if}
+          </button>
+
+          {#if showHealthExplainer}
+            <div class="health-explainer-block">
+              <p class="he-intro">
+                <strong>Business Health</strong> is a single 0–100 number that sums up how
+                well your shop is doing <em>right now</em>, combining four independent
+                signals. Each signal contributes up to a set number of points, and they
+                add up to your score:
+              </p>
+              <div class="he-components">
+                {#each healthComponents as c}
+                  <div class="he-comp">
+                    <div class="he-comp-head">
+                      <span class="he-comp-label">{c.label}</span>
+                      <span class="he-comp-value">{c.value}</span>
+                      <span class="he-comp-points">{c.points} / {c.max} pts</span>
+                    </div>
+                    <p class="he-comp-explainer">{c.explainer}</p>
+                    <p class="he-comp-rule"><em>Rule:</em> {c.rule}</p>
+                  </div>
+                {/each}
+              </div>
+              <p class="he-outro">
+                70–100 = <strong>Healthy</strong> · 40–69 = <strong>Watch</strong> ·
+                0–39 = <strong>Needs attention</strong>. Hover the component chips
+                below for a quick summary.
+              </p>
+            </div>
+          {/if}
+
           {#if healthComponents.length > 0}
             <div class="health-components">
               {#each healthComponents as c}
-                <div class="hc-chip" title={c.hint}>
+                <div class="hc-chip" title="{c.explainer} — Rule: {c.rule}">
                   <div class="hc-chip-head">
                     <span class="hc-chip-label">{c.label}</span>
                     <span class="hc-chip-points">{c.points}<span class="hc-chip-max">/{c.max}</span></span>
@@ -506,9 +529,6 @@
                 </div>
               {/each}
             </div>
-            <p class="health-explainer">
-              Score = sum of the four components. Hover a chip for the rule.
-            </p>
           {/if}
         </div>
       {/if}
@@ -606,7 +626,7 @@
         <MetricCard title="Avg Sale Value" value={data.avg_sale_value} prefix="MWK" />
       </div>
 
-      <!-- ── Sessions & Sales Trend (replaces old Cash Flow card) ── -->
+      <!-- ── Sessions & Sales Trend ── -->
       <div class="sessions-card">
         <div class="sess-header-row">
           <h3 class="sess-header">
@@ -634,7 +654,6 @@
         {:else if sessionsTrend.length === 0}
           <p class="no-data">No sessions recorded in this period.</p>
         {:else}
-          <!-- KPI row -->
           <div class="sess-kpis">
             <div class="sess-kpi">
               <span class="sk-label">Sessions</span>
@@ -654,7 +673,6 @@
             </div>
           </div>
 
-          <!-- Dual bar chart: sessions (green) + sales (blue) -->
           <div class="sess-chart">
             {#each sessionsTrend as d (d.date)}
               {@const sessH = (d.sessions / maxDayValue) * 100}
@@ -693,7 +711,6 @@
             {/if}
           </div>
 
-          <!-- Per-weekday summary -->
           {#if sessionsByWeekday.length > 1}
             <div class="sess-weekday-grid">
               {#each sessionsByWeekday as [wd, v]}
@@ -705,6 +722,53 @@
               {/each}
             </div>
           {/if}
+        {/if}
+      </div>
+
+      <!-- ── Restock Planner (replaces the old Sales Heatmap) ── -->
+      <div class="restock-card">
+        <div class="restock-header">
+          <h3>
+            <Package size={18} strokeWidth={2} />
+            Restock Planner
+          </h3>
+          <span class="restock-sub">What to buy next, ranked by urgency</span>
+        </div>
+
+        {#if willRunOut.length === 0}
+          <p class="restock-empty">
+            All your products have enough stock for at least the next two weeks.
+            Nothing to buy yet — nice work.
+          </p>
+        {:else}
+          <ul class="restock-list">
+            {#each willRunOut as p, i}
+              <li class="restock-row" class:urgent={p.days_left != null && p.days_left <= 3}>
+                <span class="restock-rank">{i + 1}</span>
+                <div class="restock-main">
+                  <span class="restock-name">{p.name}</span>
+                  <span class="restock-meta">
+                    {#if p.stock_qty != null}
+                      {p.stock_qty} in stock
+                    {/if}
+                    {#if p.days_left != null}
+                      · runs out in ~{p.days_left} day{p.days_left === 1 ? "" : "s"}
+                    {/if}
+                    {#if p.recommended_order_qty}
+                      · suggested order: <strong>{p.recommended_order_qty}</strong>
+                    {/if}
+                  </span>
+                </div>
+                {#if p.days_left != null && p.days_left <= 3}
+                  <span class="restock-badge">URGENT</span>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+          <p class="restock-hint">
+            Based on how fast each product sold in the last 14 days. "Runs out in
+            ~X days" assumes you keep selling at the same pace.
+          </p>
         {/if}
       </div>
 
@@ -787,84 +851,6 @@
           </div>
         {/if}
       </div>
-
-      <!-- ── Revenue Heatmap ── -->
-      {#if heatmap && heatmapTotal > 0}
-        <div class="heatmap-card">
-          <div class="heatmap-header">
-            <h3>
-              <Activity size={18} strokeWidth={2} />
-              Sales Heatmap (Last {heatmapDays} Days)
-            </h3>
-            <div class="period-tabs" role="tablist" aria-label="Heatmap period">
-              {#each HEATMAP_OPTIONS as n}
-                <button
-                  type="button"
-                  class="period-tab"
-                  class:active={heatmapDays === n}
-                  on:click={() => setHeatmapDays(n)}
-                  aria-pressed={heatmapDays === n}
-                  disabled={heatmapLoading}
-                >
-                  {n}d
-                </button>
-              {/each}
-            </div>
-          </div>
-
-          {#if heatmapLoading}
-            <p class="no-data">Loading…</p>
-          {:else}
-            <div class="heatmap-legend">
-              <span class="legend-label">Fewer sales</span>
-              <div class="legend-scale">
-                {#each [0, 0.25, 0.5, 0.75, 1] as i}
-                  <span
-                    class="legend-cell"
-                    style="background: rgba(15, 107, 62, {i === 0 ? 0.06 : 0.15 + i * 0.85});"
-                  ></span>
-                {/each}
-              </div>
-              <span class="legend-label">More sales</span>
-            </div>
-
-            <div class="heatmap-wrapper">
-              <div class="heatmap">
-                <div class="heatmap-corner"></div>
-                {#each Array(24) as _, h}
-                  <div class="heatmap-hour-label">
-                    {#if h % 3 === 0}{h}{/if}
-                  </div>
-                {/each}
-
-                {#each heatmap.grid as row, dayIdx}
-                  <div class="heatmap-day-label">
-                    {heatmap.weekday_labels[dayIdx]}
-                  </div>
-                  {#each row as count, hourIdx}
-                    {@const intensity = heatmapIntensity(count, heatmapMax)}
-                    <div
-                      class="heatmap-cell"
-                      class:peak={count === heatmapMax && count > 0}
-                      style="background: {count === 0
-                        ? 'rgba(15, 107, 62, 0.06)'
-                        : `rgba(15, 107, 62, ${0.15 + intensity * 0.85})`};"
-                      title="{heatmap.weekday_labels[dayIdx]} {hourIdx}:00 — {count} sale{count === 1 ? '' : 's'}"
-                    ></div>
-                  {/each}
-                {/each}
-              </div>
-            </div>
-
-            <p class="heatmap-hint">
-              Darker = more sales. Hover a cell for details.
-              {#if heatmapMax > 0}
-                Busiest slot: <strong>{heatmapMax} sale{heatmapMax === 1 ? "" : "s"}</strong>.
-              {/if}
-            </p>
-          {/if}
-        </div>
-      {/if}
 
       <!-- ── Top Products ── -->
       {#if topProducts.length > 0}
@@ -1109,7 +1095,7 @@
     width: 100%;
     display: flex;
     flex-direction: column;
-    gap: 0.85rem;
+    gap: 0.75rem;
     transition: all 0.2s;
   }
   .health-card.tone-good { border-color: #86efac; background: linear-gradient(135deg, rgba(34, 197, 94, 0.05) 0%, var(--surface, #fff) 70%); }
@@ -1142,6 +1128,99 @@
   .tone-good .health-bar-fill { background: #16a34a; }
   .tone-warn .health-bar-fill { background: #f59e0b; }
   .tone-bad .health-bar-fill { background: #dc2626; }
+
+  .health-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    background: transparent;
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 7px;
+    padding: 0.35rem 0.7rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-light, #6b7280);
+    cursor: pointer;
+    align-self: flex-start;
+    transition: all 0.15s;
+  }
+  .health-toggle:hover {
+    border-color: var(--primary, #0f6b3e);
+    color: var(--primary, #0f6b3e);
+  }
+
+  .health-explainer-block {
+    background: var(--background, #f9fafb);
+    border: 1px dashed var(--border, #e5e7eb);
+    border-radius: 10px;
+    padding: 0.8rem 0.9rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+  }
+  .he-intro {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--text, #111827);
+    line-height: 1.45;
+  }
+  .he-intro strong { color: var(--text, #111827); }
+  .he-components {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+  .he-comp {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+    padding: 0.6rem 0.75rem;
+  }
+  .he-comp-head {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.25rem;
+  }
+  .he-comp-label {
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--text, #111827);
+  }
+  .he-comp-value {
+    font-size: 0.78rem;
+    color: var(--text-light, #6b7280);
+  }
+  .he-comp-points {
+    margin-left: auto;
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--primary, #0f6b3e);
+    background: #f0fdf4;
+    border: 1px solid #86efac;
+    padding: 0.05rem 0.45rem;
+    border-radius: 20px;
+  }
+  .he-comp-explainer {
+    margin: 0 0 0.25rem;
+    font-size: 0.75rem;
+    color: var(--text, #111827);
+    line-height: 1.4;
+  }
+  .he-comp-rule {
+    margin: 0;
+    font-size: 0.72rem;
+    color: var(--text-light, #6b7280);
+    line-height: 1.4;
+  }
+  .he-outro {
+    margin: 0;
+    font-size: 0.75rem;
+    color: var(--text-light, #6b7280);
+    line-height: 1.45;
+  }
+
   .health-components { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.5rem; padding-top: 0.5rem; border-top: 1px dashed var(--border, #e5e7eb); }
   .hc-chip { display: flex; flex-direction: column; gap: 0.35rem; padding: 0.55rem 0.65rem; background: var(--background, #f9fafb); border-radius: 9px; border: 1px solid var(--border, #e5e7eb); cursor: help; transition: all 0.15s; }
   .hc-chip:hover { border-color: var(--primary, #0f6b3e); }
@@ -1151,7 +1230,6 @@
   .hc-chip-max { font-size: 0.7rem; color: var(--text-light, #6b7280); font-weight: 500; }
   .hc-bar { width: 100%; height: 5px; background: var(--surface, #fff); border-radius: 3px; overflow: hidden; border: 1px solid var(--border, #e5e7eb); }
   .hc-bar-fill { height: 100%; background: var(--primary, #0f6b3e); border-radius: 3px; transition: width 0.4s ease; }
-  .health-explainer { margin: 0; font-size: 0.72rem; color: var(--text-light, #6b7280); font-style: italic; }
 
   .today-strip {
     display: grid;
@@ -1296,6 +1374,113 @@
   .wd-main small { font-size: 0.65rem; font-weight: 500; color: var(--text-light, #6b7280); }
   .wd-sub { font-size: 0.68rem; color: var(--text-light, #6b7280); }
 
+  /* ── Restock Planner (replaces heatmap) ── */
+  .restock-card {
+    background: linear-gradient(135deg, rgba(239, 68, 68, 0.04), var(--surface, #fff) 70%);
+    border: 1px solid #fecaca;
+    border-radius: 12px;
+    padding: 1rem 1.1rem;
+    box-sizing: border-box;
+    width: 100%;
+  }
+  .restock-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.6rem;
+  }
+  .restock-header h3 {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text, #111827);
+  }
+  .restock-sub {
+    font-size: 0.75rem;
+    color: #b91c1c;
+    font-weight: 500;
+  }
+  .restock-empty {
+    text-align: center;
+    color: #166534;
+    font-size: 0.85rem;
+    padding: 1rem 0.5rem;
+    background: #f0fdf4;
+    border: 1px dashed #86efac;
+    border-radius: 8px;
+    margin: 0;
+  }
+  .restock-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .restock-row {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.55rem 0.7rem;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+  }
+  .restock-row.urgent {
+    background: #fff7ed;
+    border-color: #fed7aa;
+  }
+  .restock-rank {
+    flex-shrink: 0;
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: var(--primary, #0f6b3e);
+    color: white;
+    font-size: 0.7rem; font-weight: 700;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .restock-row.urgent .restock-rank { background: #dc2626; }
+  .restock-main {
+    flex: 1; min-width: 0;
+    display: flex; flex-direction: column; gap: 0.1rem;
+  }
+  .restock-name {
+    font-weight: 600;
+    font-size: 0.88rem;
+    color: var(--text, #111827);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .restock-meta {
+    font-size: 0.74rem;
+    color: var(--text-light, #6b7280);
+  }
+  .restock-meta strong { color: var(--text, #111827); }
+  .restock-badge {
+    flex-shrink: 0;
+    background: #fee2e2;
+    color: #991b1b;
+    font-size: 0.62rem;
+    font-weight: 800;
+    padding: 0.15rem 0.45rem;
+    border-radius: 20px;
+    letter-spacing: 0.04em;
+  }
+  .restock-hint {
+    margin: 0.6rem 0 0;
+    font-size: 0.72rem;
+    color: var(--text-light, #6b7280);
+    font-style: italic;
+    text-align: center;
+    padding-top: 0.4rem;
+    border-top: 1px dashed var(--border, #e5e7eb);
+  }
+
   /* Debt Ageing */
   .debt-card { background: var(--surface, #fff); border: 1px solid var(--border, #e5e7eb); border-radius: 12px; padding: 1rem 1.1rem; box-sizing: border-box; width: 100%; }
   .debt-header { display: flex; align-items: center; gap: 0.5rem; margin: 0 0 0.85rem; font-size: 1rem; font-weight: 600; color: var(--text, #111827); }
@@ -1325,24 +1510,6 @@
   .bar { width: 100%; max-width: 56px; background: var(--primary, #0f6b3e); border-radius: 6px 6px 0 0; min-height: 3px; transition: height 0.3s ease; display: flex; justify-content: center; align-items: flex-start; padding-top: 0.35rem; box-sizing: border-box; position: relative; overflow: hidden; }
   .bar-value { color: white; font-size: 0.65rem; font-weight: 600; white-space: nowrap; writing-mode: vertical-rl; text-orientation: upright; padding: 0.1rem; overflow: hidden; }
   .bar-label { margin-top: 0.5rem; font-size: 0.72rem; color: var(--text-light, #6b7280); text-align: center; white-space: nowrap; font-weight: 500; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
-
-  /* ── Heatmap ── */
-  .heatmap-card { background: var(--surface, #fff); border: 1px solid var(--border, #e5e7eb); border-radius: 12px; padding: 1rem 1.1rem; box-sizing: border-box; width: 100%; }
-  .heatmap-header { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
-  .heatmap-header h3 { display: flex; align-items: center; gap: 0.5rem; margin: 0; font-size: 1rem; font-weight: 600; color: var(--text, #111827); }
-  .heatmap-legend { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem; font-size: 0.72rem; color: var(--text-light, #6b7280); }
-  .legend-scale { display: flex; gap: 2px; }
-  .legend-cell { width: 14px; height: 10px; border-radius: 2px; }
-  .heatmap-wrapper { overflow-x: auto; padding-bottom: 0.25rem; }
-  .heatmap { display: grid; grid-template-columns: 36px repeat(24, minmax(16px, 1fr)); gap: 2px; min-width: 560px; }
-  .heatmap-corner { height: 14px; }
-  .heatmap-hour-label { font-size: 0.6rem; color: var(--text-light, #9ca3af); text-align: center; height: 14px; line-height: 14px; user-select: none; }
-  .heatmap-day-label { font-size: 0.65rem; font-weight: 600; color: var(--text-light, #6b7280); height: 22px; display: flex; align-items: center; padding-right: 0.4rem; user-select: none; }
-  .heatmap-cell { height: 22px; border-radius: 3px; transition: transform 0.1s, box-shadow 0.1s; cursor: pointer; }
-  .heatmap-cell:hover { transform: scale(1.15); box-shadow: 0 0 0 1px var(--primary, #0f6b3e); z-index: 2; position: relative; }
-  .heatmap-cell.peak { box-shadow: 0 0 0 1px #166534; }
-  .heatmap-hint { margin: 0.6rem 0 0; font-size: 0.75rem; color: var(--text-light, #6b7280); text-align: center; }
-  .heatmap-hint strong { color: var(--text, #111827); }
 
   /* Top products */
   .topprod-card { background: var(--surface, #fff); border: 1px solid var(--border, #e5e7eb); border-radius: 12px; padding: 1rem 1.1rem; box-sizing: border-box; width: 100%; }
@@ -1423,15 +1590,14 @@
     .alert-chip { font-size: 0.75rem; padding: 0.45rem 0.65rem; }
     .ss-grid { grid-template-columns: 1fr 1fr; }
     .debt-buckets { grid-template-columns: 1fr 1fr; }
-    .heatmap { grid-template-columns: 28px repeat(24, minmax(13px, 1fr)); gap: 1.5px; }
-    .heatmap-cell { height: 18px; border-radius: 2px; }
-    .heatmap-day-label { height: 18px; font-size: 0.6rem; }
-    .heatmap-hour-label { font-size: 0.55rem; }
     .sessions-card { padding: 0.85rem 0.9rem; }
     .sess-chart { height: 130px; gap: 0.25rem; }
     .sess-count { display: none; }
     .sess-day-label { font-size: 0.6rem; }
     .sess-weekday-grid { grid-template-columns: repeat(2, 1fr); }
+    .restock-card { padding: 0.85rem 0.9rem; }
+    .he-comp-head { gap: 0.25rem; }
+    .he-comp-points { width: 100%; margin-left: 0; margin-top: 0.25rem; text-align: center; }
   }
 
   @media (max-width: 360px) {

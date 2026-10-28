@@ -1384,7 +1384,6 @@
     font-weight: 500;
   }
 
-  /* The important line — cart items scroll internally */
   .cart-items {
     flex: 1 1 auto;
     overflow-y: auto;
@@ -1790,7 +1789,7 @@
   .btn-outline:hover { border-color: var(--primary, #0f6b3e); color: var(--primary, #0f6b3e); }
   .btn-sm { padding: 0.45rem 0.75rem; font-size: 0.85rem; }
 
-  /* ── Mobile cart FAB + sheet ── */
+  /* ── Mobile cart FAB + sheet (hidden on desktop) ── */
   .mobile-cart-fab {
     display: none;
   }
@@ -1801,19 +1800,44 @@
     display: none;
   }
 
-  /* ── Responsive ── */
+  /* ── Responsive: tablet ── */
   @media (max-width: 1024px) {
     .pos-container {
       grid-template-columns: 1fr 320px;
     }
   }
 
+  /* ── Responsive: mobile ── */
   @media (max-width: 768px) {
+    /* ── SCROLL FIX ─────────────────────────────────────────────
+       On mobile we no longer constrain the height of the grid,
+       and we let .pos-container itself scroll. This is the key
+       change that makes the POS page scrollable on tablets/phones. */
     .pos-container {
       grid-template-columns: 1fr;
       height: auto;
-      min-height: calc(100dvh - var(--topbar-height, 64px) - 3rem);
+      min-height: auto;
       gap: 1rem;
+      overflow-y: auto;
+      overflow-x: hidden;
+      -webkit-overflow-scrolling: touch;
+      /* leave room for the floating cart button + iPhone home bar */
+      padding-bottom: calc(96px + env(safe-area-inset-bottom, 0px));
+    }
+
+    /* Let the product section grow naturally; the page scrolls instead */
+    .product-section {
+      overflow: visible;
+      min-height: auto;
+    }
+    .product-grid {
+      max-height: none;
+      overflow-y: visible;
+      flex: none;
+      padding-bottom: 0.5rem;
+    }
+    .product-grid-skeleton {
+      flex: none;
     }
 
     /* Hide the desktop cart on mobile */
@@ -1821,15 +1845,11 @@
       display: none;
     }
 
-    .product-grid {
-      max-height: none;
-    }
-
     /* Floating cart button */
     .mobile-cart-fab {
       display: flex;
       position: fixed;
-      bottom: 1rem;
+      bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
       left: 1rem;
       right: 1rem;
       align-items: center;
@@ -1909,7 +1929,7 @@
       max-height: 90dvh;
       background: var(--surface, #fff);
       border-radius: 20px 20px 0 0;
-      padding: 0.5rem 1rem 1rem;
+      padding: 0.5rem 1rem calc(1rem + env(safe-area-inset-bottom, 0px));
       z-index: 1001;
       box-shadow: 0 -8px 25px rgba(0, 0, 0, 0.2);
       animation: sheetUp 0.2s ease-out;
@@ -1944,6 +1964,7 @@
       flex: 1 1 auto;
       overflow-y: auto;
       min-height: 100px;
+      -webkit-overflow-scrolling: touch;
     }
   }
 
