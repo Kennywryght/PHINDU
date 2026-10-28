@@ -53,16 +53,13 @@
   let debtAgeing = null;
   let slowMovers = [];
 
-  // Restock planner (replaces heatmap)
   let willRunOut = [];
 
-  // Info cards
   let profitByCategory = [];
   let inventoryValue = null;
   let expenseBreakdown = null;
   let goodNews = [];
 
-  // Comparison period
   const DELTA_OPTIONS = [
     ["day", "Day"],
     ["week", "Week"],
@@ -76,14 +73,12 @@
   let trendDays = 7;
   let trendLoading = false;
 
-  // Sessions & Sales trend
   let sessionsTrend = [];
   let sessionsTrendTotals = null;
   let sessionsLoading = false;
   let sessionsDays = 7;
   const SESSION_OPTIONS = [7, 14, 30];
 
-  // Business health explainer toggle
   let showHealthExplainer = false;
 
   let pollId = null;
@@ -116,8 +111,6 @@
     deltaPeriod === "month" ? "last month" :
     "last year";
 
-  // Computed session profit (revenue - cost - expenses) — sourced from
-  // the live summary so it's always in sync with the drawer.
   $: sessionProfit = sessionSummary
     ? Number(sessionSummary.sales.total_sales || 0)
       - Number(sessionSummary.expenses.total || 0)
@@ -421,7 +414,18 @@
     </div>
   {:else}
     <div class="dashboard">
-      <!-- ── SESSION SUMMARY (moved to top when a session is open) ── -->
+      <!-- ── Session banner (above the session card) ── -->
+      {#if currentSession}
+        <div class="session-info">
+          <Calendar size={16} strokeWidth={1.75} />
+          <span>
+            Showing data for session opened
+            <strong>{new Date(currentSession.opened_at).toLocaleString()}</strong>
+          </span>
+        </div>
+      {/if}
+
+      <!-- ── Session summary card (top of dashboard when a session exists) ── -->
       {#if sessionSummary}
         <div class="session-summary-card" class:active-session={sessionSummary.is_active}>
           <div class="ss-header">
@@ -457,9 +461,7 @@
             </div>
             <div class="ss-cell profit">
               <span class="ss-label">Profit</span>
-              <span class="ss-value">
-                MWK {formatMoney(sessionProfit)}
-              </span>
+              <span class="ss-value">MWK {formatMoney(sessionProfit)}</span>
             </div>
             <div class="ss-cell highlight">
               <span class="ss-label">Expected in drawer</span>
@@ -514,16 +516,6 @@
         inventoryValue={inventoryValue}
         expenseBreakdown={expenseBreakdown}
       />
-
-      {#if currentSession}
-        <div class="session-info">
-          <Calendar size={16} strokeWidth={1.75} />
-          <span>
-            Showing data for session opened
-            <strong>{new Date(currentSession.opened_at).toLocaleString()}</strong>
-          </span>
-        </div>
-      {/if}
 
       <!-- ── Business Health hero card ── -->
       {#if health}
@@ -1060,7 +1052,7 @@
     font-weight: 500;
   }
 
-  /* ── Session summary (hero when active) ── */
+  /* ── Session summary ── */
   .session-summary-card {
     background: linear-gradient(135deg, rgba(59, 130, 246, 0.05) 0%, var(--surface, #fff) 70%);
     border: 1px solid #bfdbfe;
@@ -1131,6 +1123,21 @@
   }
   .ss-cell.highlight .ss-value { color: #1e40af; }
 
+  /* ── Session banner ── */
+  .session-info {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    background: rgba(15, 107, 62, 0.08);
+    padding: 0.65rem 0.9rem;
+    border-radius: 10px;
+    font-size: 0.85rem;
+    color: var(--primary, #0f6b3e);
+    border-left: 3px solid var(--primary, #0f6b3e);
+    line-height: 1.4;
+  }
+  .session-info strong { font-weight: 600; word-break: break-word; }
+
   /* ── Alerts strip ── */
   .alerts-strip {
     display: flex;
@@ -1187,21 +1194,6 @@
     color: var(--text-light, #6b7280);
     margin-left: auto;
   }
-
-  /* ── Session info ── */
-  .session-info {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.5rem;
-    background: rgba(15, 107, 62, 0.08);
-    padding: 0.65rem 0.9rem;
-    border-radius: 10px;
-    font-size: 0.85rem;
-    color: var(--primary, #0f6b3e);
-    border-left: 3px solid var(--primary, #0f6b3e);
-    line-height: 1.4;
-  }
-  .session-info strong { font-weight: 600; word-break: break-word; }
 
   /* ── Health card ── */
   .health-card {
