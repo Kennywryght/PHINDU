@@ -1,8 +1,14 @@
 """PHINDU API entry point."""
 
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
 
 # Import ALL models so Base.metadata.create_all() sees every table
 import app.db.models  # noqa: F401
@@ -21,6 +27,16 @@ from app.db.session import Base, engine
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
+# ── Rate limiter ──
+# Per-IP rate limiting. Routes opt in via @limiter.limit(...).
+# memory:// is fine for a single Render worker. If WEB_CONCURRENCY > 1,
+# switch RATE_LIMIT_STORAGE to a redis:// URL.
+limiter = Limiter(
+    key_func=get_remote_address,
+    default_limits=[],
+    storage_uri=os.getenv("RATE_LIMIT_STORAGE", "memory://"),
+)
+
 app = FastAPI(
     title="PHINDU API",
     swagger_ui_init_oauth={
@@ -31,19 +47,35 @@ app = FastAPI(
     },
 )
 
+# Attach limiter to app (must happen before middleware registration)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+
+# ── CORS ──
+# Locked down. Only the real frontend (from env var) plus local dev
+# origins can reach this API. No wildcard Vercel regex.
+_env = os.getenv("ENV", "dev").lower()
+_prod_origins = [
+    u.strip() for u in os.getenv("FRONTEND_URLS", "").split(",") if u.strip()
+]
+_dev_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:4173",
+]
+_allowed = _prod_origins if _env == "prod" else _prod_origins + _dev_origins
+
+if _env == "prod" and not _prod_origins:
+    print("⚠️  ENV=prod but FRONTEND_URLS is empty — CORS will reject all browsers.")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "https://phindu-sb.vercel.app",
-        "https://phindu-two.vercel.app",
-        
-    ],
-    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_origins=_allowed,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    max_age=600,
 )
 
 # Include routers

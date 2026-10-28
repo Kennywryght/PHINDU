@@ -4,10 +4,12 @@ Authentication routes: register, login, me, update, change-password.
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError
 from pydantic import BaseModel, EmailStr, Field
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 
 from app.core.security import (
@@ -23,6 +25,13 @@ from app.db.session import get_db
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+
+# Per-route limiter. The actual Limiter instance is created in main.py;
+# this one shares the same storage because slowapi uses a module-level
+# default that main.py overrides via app.state.limiter at startup.
+# If you ever see limits not applying, define the limiter once here and
+# import it into main.py instead of the other way around.
+limiter = Limiter(key_func=get_remote_address)
 
 
 # ─── Schemas ─────────────────────────────────────────────────────
@@ -105,7 +114,12 @@ def _user_to_out(user: User, db: Session) -> dict:
 
 # ─── Endpoints ──────────────────────────────────────────────────
 @router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
-def register(data: RegisterRequest, db: Session = Depends(get_db)):
+@limiter.limit("3/hour")
+def register(
+    request: Request,
+    data: RegisterRequest,
+    db: Session = Depends(get_db),
+):
     if len(data.password.encode("utf-8")) > 72:
         raise HTTPException(status_code=400, detail="Password too long (max 72 bytes)")
 
@@ -134,7 +148,9 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=Token)
+@limiter.limit("5/minute")
 def login(
+    request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ):
@@ -150,7 +166,9 @@ def login(
 
 
 @router.get("/me", response_model=UserOut)
+@limiter.limit("60/minute")
 def get_me(
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -158,7 +176,9 @@ def get_me(
 
 
 @router.put("/me", response_model=UserOut)
+@limiter.limit("10/minute")
 def update_me(
+    request: Request,
     data: UpdateProfileRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -171,7 +191,9 @@ def update_me(
 
 
 @router.post("/change-password")
+@limiter.limit("5/hour")
 def change_password(
+    request: Request,
     data: ChangePasswordRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
