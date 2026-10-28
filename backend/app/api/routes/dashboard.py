@@ -260,7 +260,6 @@ def get_health_score(
         revenue = fin["revenue"]
         profit = fin["profit"]
 
-        # Profit margin (max 40)
         if revenue > 0:
             margin = profit / revenue
         else:
@@ -277,7 +276,6 @@ def get_health_score(
         components["profit_margin_pct"] = round(margin * 100, 1)
         score += pm_points
 
-        # Cash flow (max 30)
         if revenue > 0:
             cf_ratio = max(0.0, min(1.0, profit / revenue))
         else:
@@ -287,7 +285,6 @@ def get_health_score(
         components["cash_flow_ratio"] = round(cf_ratio, 2)
         score += cf_points
 
-        # Stock health (max 20) — leaf products only
         leaf_total = _leaf_product_count(db, shop_id)
         low = _low_stock_count(db, shop_id)
         if leaf_total > 0:
@@ -301,7 +298,6 @@ def get_health_score(
         components["low_stock"] = low
         score += stock_points
 
-        # Debt collection (max 10)
         collected = (
             db.query(func.coalesce(func.sum(Payment.amount), 0))
             .filter(
@@ -378,7 +374,6 @@ def get_focus_actions(
     cutoff_30d = now - timedelta(days=30)
     cutoff_14d = now - timedelta(days=14)
 
-    # Precompute recent sales map
     sold_recently = (
         db.query(
             SaleItem.product_id,
@@ -391,7 +386,6 @@ def get_focus_actions(
     )
     sold_map = {row.product_id: float(row.sold or 0) for row in sold_recently}
 
-    # ── 1. Critical: zero stock but sold recently ──
     zero_stock = (
         _leaf_products_query(db, shop_id)
         .filter(Product.stock_qty <= 0)
@@ -410,7 +404,6 @@ def get_focus_actions(
             if len(items) >= 3:
                 return {"generated_at": now.isoformat(), "items": items}
 
-    # ── 2. Restock: < 3 days of stock ──
     live_products = (
         _leaf_products_query(db, shop_id)
         .filter(Product.stock_qty > 0)
@@ -440,7 +433,6 @@ def get_focus_actions(
         if len(items) >= 3:
             return {"generated_at": now.isoformat(), "items": items}
 
-    # ── 3. Debtors overdue >14 days ──
     overdue_customers = (
         db.query(Customer)
         .filter(Customer.shop_id == shop_id, Customer.total_credit > 0)
@@ -470,7 +462,6 @@ def get_focus_actions(
         if len(items) >= 3:
             return {"generated_at": now.isoformat(), "items": items}
 
-    # ── 4. Margin drop (≥8 pts) in last 30 days ──
     leaf_products = _leaf_products_query(db, shop_id).filter(Product.selling_price > 0).all()
     margin_drops = []
     for p in leaf_products:
@@ -511,7 +502,6 @@ def get_focus_actions(
         if len(items) >= 3:
             return {"generated_at": now.isoformat(), "items": items}
 
-    # ── 5. Fallback: low-stock leaf products ──
     low_products = (
         _leaf_products_query(db, shop_id)
         .filter(Product.stock_qty > 0, Product.stock_qty <= Product.low_stock_threshold)
@@ -628,7 +618,7 @@ def get_cash_flow(
     }
 
 
-# ─── GET /metric-deltas  ← CHANGED: now accepts `period` ────────
+# ─── GET /metric-deltas ─────────────────────────────────────────
 
 
 @router.get("/metric-deltas")
@@ -788,16 +778,9 @@ def get_alerts(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """
-    Aggregated alert chips for the dashboard top strip.
-
-    Each chip: { id, severity ('high'|'medium'|'low'|'info'),
-                title, detail, link, cta }
-    """
     now = datetime.utcnow()
     alerts: list[dict] = []
 
-    # 1. No open session?
     active_session = (
         db.query(SessionModel)
         .filter(SessionModel.is_active == True, SessionModel.shop_id == shop_id)
@@ -813,7 +796,6 @@ def get_alerts(
             "cta": "Open session",
         })
 
-    # 2. Low stock
     low_stock_count = _low_stock_count(db, shop_id)
     if low_stock_count > 0:
         alerts.append({
@@ -825,7 +807,6 @@ def get_alerts(
             "cta": "View",
         })
 
-    # 3. Zero-stock products that sold recently (critical)
     cutoff_30d = now - timedelta(days=30)
     sold_recently = (
         db.query(SaleItem.product_id)
@@ -849,7 +830,6 @@ def get_alerts(
             "cta": "Restock",
         })
 
-    # 4. Overdue debtors (14+ days no payment)
     cutoff_14d = now - timedelta(days=14)
     debtors = (
         db.query(Customer)
@@ -877,7 +857,6 @@ def get_alerts(
             "cta": "Follow up",
         })
 
-    # 5. Revenue down vs last week
     cur_start = now - timedelta(days=7)
     prev_start = now - timedelta(days=14)
     cur = _revenue_and_profit_for_window(db, shop_id, cur_start, now)
@@ -917,11 +896,6 @@ def get_top_customers(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """
-    Top customers by revenue in the given window.
-
-    Returns: [{ id, name, phone, revenue, purchase_count, credit_outstanding }]
-    """
     now = datetime.utcnow()
     start = now - timedelta(days=days)
 
@@ -972,9 +946,6 @@ def get_debt_ageing(
     db: Session = Depends(get_db),
     shop_id: str = Depends(get_current_shop_id),
 ):
-    """
-    Bucket outstanding customer credit by age of the oldest unpaid sale.
-    """
     now = datetime.utcnow()
 
     customers = (
@@ -1254,13 +1225,14 @@ def get_will_run_out(
             "avg_daily_sales": round(daily, 2),
             "days_left": round(days_left, 1),
             "suggested_reorder": suggested,
+            "recommended_order_qty": suggested,
         })
 
     rows.sort(key=lambda r: r["days_left"])
     return {"window_days": days, "products": rows[:limit]}
 
 
-# ─── GET /profit-by-category ────────────────────────────────────
+# ─── GET /profit-by-category  ← CHANGED ─────────────────────────
 
 
 @router.get("/profit-by-category")
@@ -1293,22 +1265,45 @@ def get_profit_by_category(
     )
 
     items = []
+    total_profit = 0.0
+    total_revenue = 0.0
     for r in rows:
         revenue = float(r.revenue or 0)
         cost = float(r.cost or 0)
         profit = revenue - cost
         margin = (profit / revenue * 100) if revenue > 0 else 0.0
+        total_profit += profit
+        total_revenue += revenue
         items.append({
             "category": r.category or "Uncategorised",
             "revenue": round(revenue, 2),
             "cost": round(cost, 2),
             "profit": round(profit, 2),
-            "margin_pct": round(margin, 1),
+            "margin_pct": round(margin, 2),
             "items_sold": float(r.qty or 0),
         })
 
+    # Enrich each row with share-of-profit and share-of-revenue so the UI
+    # never has to compute a percentage itself.
+    for it in items:
+        it["share_percent"] = (
+            round((it["profit"] / total_profit) * 100, 2)
+            if total_profit != 0
+            else 0.0
+        )
+        it["revenue_share_percent"] = (
+            round((it["revenue"] / total_revenue) * 100, 2)
+            if total_revenue > 0
+            else 0.0
+        )
+
     items.sort(key=lambda x: x["revenue"], reverse=True)
-    return {"window_days": days, "categories": items}
+    return {
+        "window_days": days,
+        "total_profit": round(total_profit, 2),
+        "total_revenue": round(total_revenue, 2),
+        "categories": items,
+    }
 
 
 # ─── GET /customer-health ───────────────────────────────────────
@@ -1474,11 +1469,12 @@ def get_inventory_value(
         "potential_margin": round(value_at_retail - value_at_cost, 2),
         "sku_count": sku_count,
         "cogs_90d": round(cogs_90d, 2),
+        "turnover": round(turnover_annual, 2),
         "turnover_annual": round(turnover_annual, 2),
     }
 
 
-# ─── GET /expense-breakdown ─────────────────────────────────────
+# ─── GET /expense-breakdown  ← CHANGED ──────────────────────────
 
 
 @router.get("/expense-breakdown")
@@ -1510,20 +1506,25 @@ def get_expense_breakdown(
 
     grand_total = sum(float(r.total or 0) for r in rows)
 
+    categories = []
+    for r in rows:
+        total = float(r.total or 0)
+        share = (total / grand_total * 100) if grand_total > 0 else 0.0
+        categories.append({
+            "category": r.category or "Uncategorised",
+            "total": round(total, 2),
+            "count": int(r.cnt or 0),
+            # Two fields with different precision:
+            #  - share_pct: 1 decimal (compact)
+            #  - percent: 2 decimals (accurate for tiny shares like 0.42%)
+            "share_pct": round(share, 1),
+            "percent": round(share, 2),
+        })
+
     return {
         "window_days": days,
         "total": round(grand_total, 2),
-        "categories": [
-            {
-                "category": r.category or "Uncategorised",
-                "total": round(float(r.total or 0), 2),
-                "count": int(r.cnt or 0),
-                "share_pct": round(
-                    (float(r.total or 0) / grand_total * 100) if grand_total else 0, 1
-                ),
-            }
-            for r in rows
-        ],
+        "categories": categories,
     }
 
 

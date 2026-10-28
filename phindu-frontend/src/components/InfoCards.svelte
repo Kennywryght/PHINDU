@@ -3,7 +3,6 @@
     Sparkles,
     Package,
     TrendingUp,
-    Users,
     Wallet,
     PiggyBank,
     AlertCircle,
@@ -14,7 +13,47 @@
   export let profitByCategory = [];
   export let inventoryValue = null;
   export let expenseBreakdown = null;
-  // NOTE: customerHealth was removed — the parent no longer passes it.
+
+  // Helper: format a percentage so tiny values (<1%) keep 2 decimals
+  // (e.g. 0.42% stays "0.42%", 13.4% stays "13.4%", 100% stays "100%").
+  function fmtPct(value) {
+    const n = Number(value);
+    if (!isFinite(n)) return "—";
+    if (n === 0) return "0%";
+    const abs = Math.abs(n);
+    if (abs < 1) return n.toFixed(2) + "%";
+    if (abs < 10) return n.toFixed(1) + "%";
+    return n.toFixed(1) + "%";
+  }
+
+  // Compute a category's share-of-profit % from the current array, used
+  // as a fallback if the API didn't include share_percent.
+  $: profitTotal = profitByCategory.reduce(
+    (s, c) => s + Number(c.profit || 0),
+    0
+  );
+
+  // Compute expense share from expenseBreakdown.total as a fallback.
+  $: expenseTotal = expenseBreakdown?.total ?? 0;
+
+  function profitSharePct(c) {
+    if (c.share_percent != null) return Number(c.share_percent);
+    if (profitTotal > 0) return (Number(c.profit || 0) / profitTotal) * 100;
+    return 0;
+  }
+
+  function expenseSharePct(c) {
+    if (c.percent != null) return Number(c.percent);
+    if (c.share_pct != null) return Number(c.share_pct);
+    if (expenseTotal > 0) return (Number(c.total || 0) / expenseTotal) * 100;
+    return 0;
+  }
+
+  function fmtMoney(n) {
+    const num = Number(n || 0);
+    if (!isFinite(num)) return "0";
+    return num.toLocaleString(undefined, { maximumFractionDigits: 0 });
+  }
 </script>
 
 <div class="info-cards-grid">
@@ -41,8 +80,10 @@
               <strong>{p.name}</strong>
               <span class="wro-meta">
                 ~{p.days_left} day{p.days_left === 1 ? "" : "s"} left
-                {#if p.recommended_order_qty}
+                {#if p.recommended_order_qty != null}
                   · Order ~{p.recommended_order_qty}
+                {:else if p.suggested_reorder != null}
+                  · Order ~{p.suggested_reorder}
                 {/if}
               </span>
             </div>
@@ -61,16 +102,18 @@
           <li class="pbc-row">
             <span class="pbc-name">{c.category}</span>
             <span class="pbc-val">
-              MWK {Number(c.profit || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+              MWK {fmtMoney(c.profit)}
             </span>
-            <span class="pbc-pct">{Number(c.margin_percent || 0).toFixed(1)}%</span>
+            <span class="pbc-pct" title="Share of total profit">
+              {fmtPct(profitSharePct(c))}
+            </span>
           </li>
         {/each}
       </ul>
     </div>
   {/if}
 
-  <!-- ── Inventory value (with plain-English explanation) ── -->
+  <!-- ── Inventory value ── -->
   {#if inventoryValue}
     <div class="info-card inventory">
       <h4><Package size={16} strokeWidth={2} /> Inventory value</h4>
@@ -82,15 +125,17 @@
         </div>
         <div class="inv-stat" title="Total money you paid for the stock you currently hold (buying cost)">
           <span class="inv-label">Stock at cost</span>
-          <strong class="inv-value">MWK {Number(inventoryValue.cost_value || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>
+          <strong class="inv-value">MWK {fmtMoney(inventoryValue.value_at_cost)}</strong>
         </div>
         <div class="inv-stat" title="Money you would make if you sold ALL stock at today's prices (revenue − cost)">
           <span class="inv-label">Potential profit</span>
-          <strong class="inv-value">MWK {Number(inventoryValue.potential_margin || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>
+          <strong class="inv-value">MWK {fmtMoney(inventoryValue.potential_margin)}</strong>
         </div>
-        <div class="inv-stat" title="Average number of times your stock sells out and is refilled per month. Higher = faster money turn-around">
+        <div class="inv-stat" title="Average number of times your stock sells out and is refilled per year. Higher = faster money turn-around">
           <span class="inv-label">Turnover</span>
-          <strong class="inv-value">{Number(inventoryValue.turnover || 0).toFixed(1)}×</strong>
+          <strong class="inv-value">
+            {Number(inventoryValue.turnover ?? inventoryValue.turnover_annual ?? 0).toFixed(1)}×
+          </strong>
         </div>
       </div>
 
@@ -100,9 +145,9 @@
           <strong>Potential profit</strong> = what you'd earn if all current stock sold at
           today's prices. It's not money in the bank yet — it's the value sitting on
           your shelves.<br />
-          <strong>Turnover</strong> = how many times per month your average stock gets
+          <strong>Turnover</strong> = how many times per year your average stock gets
           sold and replaced. A turnover of <em>2×</em> means you cycle through your
-          stock twice a month. Higher is better — it means cash isn't stuck on shelves.
+          stock twice a year. Higher is better — it means cash isn't stuck on shelves.
         </p>
       </div>
     </div>
@@ -116,17 +161,16 @@
         {#each expenseBreakdown.categories.slice(0, 5) as c}
           <li class="pbc-row">
             <span class="pbc-name">{c.category}</span>
-            <span class="pbc-val">
-              MWK {Number(c.total || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+            <span class="pbc-val">MWK {fmtMoney(c.total)}</span>
+            <span class="pbc-pct" title="Share of total expenses">
+              {fmtPct(expenseSharePct(c))}
             </span>
-            <span class="pbc-pct">{Number(c.percent || 0).toFixed(0)}%</span>
           </li>
         {/each}
       </ul>
       {#if expenseBreakdown.total != null}
         <p class="exp-total">
-          <PiggyBank size={12} /> Total: MWK
-          {Number(expenseBreakdown.total || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+          <PiggyBank size={12} /> Total: MWK {fmtMoney(expenseBreakdown.total)}
         </p>
       {/if}
     </div>
@@ -195,7 +239,7 @@
 
   .pbc-row {
     display: grid;
-    grid-template-columns: 1fr auto auto;
+    grid-template-columns: minmax(0, 1fr) auto auto;
     align-items: baseline;
     gap: 0.5rem;
   }
@@ -205,12 +249,27 @@
     white-space: nowrap;
     color: var(--text, #111827);
   }
-  .pbc-val { font-weight: 600; color: var(--text, #111827); }
+  .pbc-val {
+    font-weight: 600;
+    color: var(--text, #111827);
+    white-space: nowrap;
+  }
   .pbc-pct {
-    font-size: 0.7rem;
-    color: var(--text-light, #6b7280);
-    min-width: 34px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--primary, #0f6b3e);
+    background: #f0fdf4;
+    border: 1px solid #86efac;
+    padding: 0.05rem 0.4rem;
+    border-radius: 20px;
+    min-width: 42px;
     text-align: right;
+    white-space: nowrap;
+  }
+  .info-card.expenses .pbc-pct {
+    color: #b45309;
+    background: #fffbeb;
+    border-color: #fde68a;
   }
 
   .inv-stats {
@@ -270,5 +329,6 @@
   @media (max-width: 480px) {
     .inv-stats { grid-template-columns: 1fr 1fr; }
     .inv-value { font-size: 0.85rem; }
+    .pbc-pct { min-width: 38px; font-size: 0.68rem; }
   }
 </style>
