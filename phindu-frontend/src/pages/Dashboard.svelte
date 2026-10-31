@@ -26,6 +26,7 @@
   import MetricCard from "../components/MetricCard.svelte";
   import InfoCards from "../components/InfoCards.svelte";
   import API from "../api/api";
+  import EmptyState from "../components/EmptyState.svelte";
 
   let data = {
     total_revenue: 0,
@@ -83,10 +84,22 @@
 
   let pollId = null;
 
+  // ── Loading control (performance) ──
+  let loadSeq = 0;            // discards stale responses
+  let hasLoadedOnce = false;  // spinner only on the very first load
+  let secondaryReady = false; // secondary widgets finished (avoids empty-state flash)
+  let lastLoadedAt = 0;
+  const STALE_MS = 30000;
+
   onMount(() => {
     loadDashboard();
     const onVis = () => {
-      if (document.visibilityState === "visible") loadDashboard();
+      if (
+        document.visibilityState === "visible" &&
+        Date.now() - lastLoadedAt > STALE_MS
+      ) {
+        loadDashboard({ silent: true });
+      }
     };
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
@@ -96,11 +109,18 @@
     if (pollId) clearInterval(pollId);
   });
 
-  $: {
-    if (pollId) { clearInterval(pollId); pollId = null; }
-    if (currentSession) {
+  // Poll only while a session is open; only re-evaluates when the flag flips.
+  $: hasSession = !!currentSession;
+  $: syncPolling(hasSession);
+
+  function syncPolling(active) {
+    if (pollId) {
+      clearInterval(pollId);
+      pollId = null;
+    }
+    if (active) {
       pollId = setInterval(() => {
-        if (document.visibilityState === "visible") loadDashboard();
+        if (document.visibilityState === "visible") refreshLive();
       }, 60000);
     }
   }
@@ -111,134 +131,212 @@
     deltaPeriod === "month" ? "last month" :
     "last year";
 
-  $: sessionProfit = sessionSummary
-    ? Number(sessionSummary.sales.total_sales || 0)
-      - Number(sessionSummary.expenses.total || 0)
-      - Number(sessionSummary.sales.cogs || 0)
-    : 0;
+  // Keep the session card and Money card profit values consistent.
+  // The dashboard endpoint supplies the profit value used by the Money card.
+  $: sessionProfit = Number(data?.profit ?? 0) || 0;
 
-  async function loadDashboard() {
-    loading = loading && !data.session_id;
+  // Show the welcome state only when the shop has no activity or stock signals.
+  $: isEmptyShop =
+    !loading &&
+    !error &&
+    secondaryReady &&
+    !currentSession &&
+    (data?.total_revenue ?? 0) === 0 &&
+    (data?.total_items_sold ?? 0) === 0 &&
+    (data?.total_expenses ?? 0) === 0 &&
+    alerts.length === 0 &&
+    willRunOut.length === 0 &&
+    slowMovers.length === 0 &&
+    topProducts.length === 0;
+
+  function dashboardUrl(session, period) {
+    return session
+      ? `/dashboard/?session_id=${session.id}&period=${period}`
+      : `/dashboard/?period=${period}`;
+  }
+
+  function pickDash(res, fallback) {
+    const d = Array.isArray(res?.data) ? res.data[0] : res?.data;
+    return d || fallback;
+  }
+
+  async function loadDashboard(opts) {
+    const silent = opts && opts.silent === true;
+    const seq = ++loadSeq;
+    const isStale = () => seq !== loadSeq;
+
+    if (!hasLoadedOnce && !silent) loading = true;
     error = null;
-    try {
-      const [
-        sessionRes,
-        trendRes,
-        healthRes,
-        focusRes,
-        deltaRes,
-        sessRes,
-        topRes,
-        alertsRes,
-        topCustRes,
-        debtRes,
-        slowRes,
-        runOutRes,
-        catRes,
-        invRes,
-        expRes,
-        goodNewsRes,
-      ] = await Promise.all([
-        API.get("/sessions/current").catch(() => ({ data: {} })),
-        API.get(`/analytics/revenue-trend?days=${trendDays}`),
-        API.get("/dashboard/health-score"),
-        API.get("/dashboard/focus"),
-        API.get(`/dashboard/metric-deltas?period=${deltaPeriod}`).catch(() => ({
-          data: {
-            revenue: { current: 0, previous: 0, absolute: 0, percent: null },
-            profit: { current: 0, previous: 0, absolute: 0, percent: null },
-            expenses: { current: 0, previous: 0, absolute: 0, percent: null },
-            items_sold: { current: 0, previous: 0, absolute: 0, percent: null },
-          },
-        })),
-        API.get(`/dashboard/sessions-trend?days=${sessionsDays}`).catch(() => ({
-          data: { items: [], totals: null },
-        })),
-        API.get("/dashboard/top-products-trend?days=7&limit=3"),
-        API.get("/dashboard/alerts").catch(() => ({ data: { alerts: [] } })),
-        API.get("/dashboard/top-customers?days=7&limit=5").catch(() => ({ data: { customers: [] } })),
-        API.get("/dashboard/debt-ageing").catch(() => ({ data: null })),
-        API.get("/dashboard/slow-movers?days=30&limit=5").catch(() => ({ data: { products: [] } })),
-        API.get("/dashboard/will-run-out?days=14&limit=5").catch(() => ({ data: { products: [] } })),
-        API.get("/dashboard/profit-by-category?days=30").catch(() => ({ data: { categories: [] } })),
-        API.get("/dashboard/inventory-value").catch(() => ({ data: null })),
-        API.get("/dashboard/expense-breakdown?days=30").catch(() => ({ data: null })),
-        API.get("/dashboard/good-news").catch(() => ({ data: { items: [] } })),
-      ]);
 
+    // Run a request and apply its result when it lands (progressive render).
+    const run = (promise, apply) =>
+      promise
+        .then((res) => {
+          if (!isStale()) apply(res);
+        })
+        .catch((e) => console.error(e));
+
+    try {
+      // ── Fire every independent request immediately, in parallel ──
+      const sessionP = API.get("/sessions/current").catch(() => ({ data: {} }));
+
+      const secondary = [
+        run(API.get(`/analytics/revenue-trend?days=${trendDays}`), (r) => {
+          chartData = r.data;
+        }),
+        run(API.get("/dashboard/health-score"), (r) => {
+          health = r.data;
+        }),
+        run(API.get("/dashboard/focus"), (r) => {
+          focus = r.data?.items || [];
+        }),
+        run(
+          API.get(`/dashboard/metric-deltas?period=${deltaPeriod}`).catch(() => ({
+            data: {
+              revenue: { current: 0, previous: 0, absolute: 0, percent: null },
+              profit: { current: 0, previous: 0, absolute: 0, percent: null },
+              expenses: { current: 0, previous: 0, absolute: 0, percent: null },
+              items_sold: { current: 0, previous: 0, absolute: 0, percent: null },
+            },
+          })),
+          (r) => {
+            deltas = r.data;
+          }
+        ),
+        run(
+          API.get(`/dashboard/sessions-trend?days=${sessionsDays}`).catch(() => ({
+            data: { items: [], totals: null },
+          })),
+          (r) => {
+            sessionsTrend = r.data?.items || [];
+            sessionsTrendTotals = r.data?.totals || null;
+          }
+        ),
+        run(API.get("/dashboard/top-products-trend?days=7&limit=3"), (r) => {
+          topProducts = r.data?.products || [];
+        }),
+        run(API.get("/dashboard/alerts").catch(() => ({ data: { alerts: [] } })), (r) => {
+          alerts = r.data?.alerts || [];
+        }),
+        run(
+          API.get("/dashboard/top-customers?days=7&limit=5").catch(() => ({ data: { customers: [] } })),
+          (r) => {
+            topCustomers = r.data?.customers || [];
+          }
+        ),
+        run(API.get("/dashboard/debt-ageing").catch(() => ({ data: null })), (r) => {
+          debtAgeing = r.data;
+        }),
+        run(
+          API.get("/dashboard/slow-movers?days=30&limit=5").catch(() => ({ data: { products: [] } })),
+          (r) => {
+            slowMovers = r.data?.products || [];
+          }
+        ),
+        run(
+          API.get("/dashboard/will-run-out?days=14&limit=5").catch(() => ({ data: { products: [] } })),
+          (r) => {
+            willRunOut = r.data?.products || [];
+          }
+        ),
+        run(
+          API.get("/dashboard/profit-by-category?days=30").catch(() => ({ data: { categories: [] } })),
+          (r) => {
+            const cats = r.data?.categories || [];
+            const total = cats.reduce((s, x) => s + Number(x.profit || 0), 0);
+            profitByCategory = cats.map((c) => {
+              if (c.share_percent == null) {
+                return {
+                  ...c,
+                  share_percent:
+                    total > 0 ? Number(((c.profit || 0) / total) * 100).toFixed(1) : "0.0",
+                };
+              }
+              return c;
+            });
+          }
+        ),
+        run(API.get("/dashboard/inventory-value").catch(() => ({ data: null })), (r) => {
+          inventoryValue = r.data;
+        }),
+        run(API.get("/dashboard/expense-breakdown?days=30").catch(() => ({ data: null })), (r) => {
+          if (r.data?.categories) {
+            const cats = r.data.categories;
+            const total = cats.reduce((s, c) => s + Number(c.total || 0), 0);
+            expenseBreakdown = {
+              ...r.data,
+              categories: cats.map((c) => ({
+                ...c,
+                percent:
+                  c.percent != null
+                    ? c.percent
+                    : total > 0
+                    ? Number(((c.total || 0) / total) * 100).toFixed(2)
+                    : "0.00",
+              })),
+            };
+          } else {
+            expenseBreakdown = r.data;
+          }
+        }),
+        run(API.get("/dashboard/good-news").catch(() => ({ data: { items: [] } })), (r) => {
+          goodNews = r.data?.items || [];
+        }),
+      ];
+
+      // ── Core: session -> dashboard + summary (the only blocking path) ──
+      const sessionRes = await sessionP;
+      if (isStale()) return;
       currentSession = sessionRes.data?.id ? sessionRes.data : null;
 
       const [dashRes, summaryRes] = await Promise.all([
-        API.get(
-          currentSession
-            ? `/dashboard/?session_id=${currentSession.id}`
-            : `/dashboard/`
-        ),
+        API.get(dashboardUrl(currentSession, deltaPeriod)),
         currentSession
           ? API.get(`/sessions/${currentSession.id}/summary`).catch(() => ({ data: null }))
           : Promise.resolve({ data: null }),
       ]);
+      if (isStale()) return;
 
-      data = Array.isArray(dashRes.data) ? dashRes.data[0] : dashRes.data;
-      chartData = trendRes.data;
-      health = healthRes.data;
-      focus = focusRes.data?.items || [];
-      deltas = deltaRes.data;
-      topProducts = topRes.data?.products || [];
+      data = pickDash(dashRes, data);
       sessionSummary = summaryRes.data;
 
-      sessionsTrend = sessRes.data?.items || [];
-      sessionsTrendTotals = sessRes.data?.totals || null;
+      hasLoadedOnce = true;
+      lastLoadedAt = Date.now();
+      loading = false; // render now; the rest streams in
 
-      alerts = alertsRes.data?.alerts || [];
-      topCustomers = topCustRes.data?.customers || [];
-      debtAgeing = debtRes.data;
-      slowMovers = slowRes.data?.products || [];
-
-      willRunOut = runOutRes.data?.products || [];
-
-      profitByCategory = (catRes.data?.categories || []).map((c) => {
-        if (c.share_percent == null) {
-          const total = (catRes.data?.categories || []).reduce(
-            (s, x) => s + Number(x.profit || 0),
-            0
-          );
-          return {
-            ...c,
-            share_percent:
-              total > 0 ? Number(((c.profit || 0) / total) * 100).toFixed(1) : "0.0",
-          };
-        }
-        return c;
-      });
-
-      inventoryValue = invRes.data;
-
-      if (expRes.data?.categories) {
-        const cats = expRes.data.categories;
-        const total = cats.reduce((s, c) => s + Number(c.total || 0), 0);
-        expenseBreakdown = {
-          ...expRes.data,
-          categories: cats.map((c) => ({
-            ...c,
-            percent:
-              c.percent != null
-                ? c.percent
-                : total > 0
-                ? Number(((c.total || 0) / total) * 100).toFixed(2)
-                : "0.00",
-          })),
-        };
-      } else {
-        expenseBreakdown = expRes.data;
-      }
-
-      goodNews = goodNewsRes.data?.items || [];
+      await Promise.allSettled(secondary);
+      if (!isStale()) secondaryReady = true;
     } catch (err) {
-      error = "Failed to load dashboard data";
+      if (!hasLoadedOnce) {
+        error = "Failed to load dashboard data";
+      }
       console.error(err);
     } finally {
-      loading = false;
+      if (!isStale()) loading = false;
+    }
+  }
+
+  // Light refresh used by the 60s poll: only live session data + alerts.
+  async function refreshLive() {
+    try {
+      const sessionRes = await API.get("/sessions/current").catch(() => ({ data: {} }));
+      const sess = sessionRes.data?.id ? sessionRes.data : null;
+
+      const [dashRes, summaryRes, alertsRes] = await Promise.all([
+        API.get(dashboardUrl(sess, deltaPeriod)),
+        sess
+          ? API.get(`/sessions/${sess.id}/summary`).catch(() => ({ data: null }))
+          : Promise.resolve({ data: null }),
+        API.get("/dashboard/alerts").catch(() => ({ data: { alerts: [] } })),
+      ]);
+
+      currentSession = sess;
+      data = pickDash(dashRes, data);
+      sessionSummary = summaryRes.data;
+      alerts = alertsRes.data?.alerts || [];
+      lastLoadedAt = Date.now();
+    } catch (e) {
+      console.error(e);
     }
   }
 
@@ -254,10 +352,32 @@
     }
   }
 
-  function setDeltaPeriod(p) {
+  // Refresh headline metrics and comparison deltas from the same selected period.
+  async function setDeltaPeriod(p) {
     if (deltaPeriod === p) return;
+
     deltaPeriod = p;
-    loadDeltas();
+    deltaLoading = true;
+
+    try {
+      const [dashRes, deltaRes] = await Promise.all([
+        API.get(dashboardUrl(currentSession, p)),
+        API.get(`/dashboard/metric-deltas?period=${p}`),
+      ]);
+
+      const nextDashboardData = Array.isArray(dashRes.data)
+        ? dashRes.data[0]
+        : dashRes.data;
+
+      if (nextDashboardData) {
+        data = nextDashboardData;
+      }
+      deltas = deltaRes.data;
+    } catch (e) {
+      console.error("Failed to update dashboard period:", e);
+    } finally {
+      deltaLoading = false;
+    }
   }
 
   async function loadTrend() {
@@ -412,6 +532,16 @@
         <RefreshCw size={16} strokeWidth={2} /> Retry
       </button>
     </div>
+  {:else if isEmptyShop}
+    <EmptyState
+      icon={Package}
+      title="Welcome to your shop!"
+      message="Add your first product to get started. Then open a session and make your first sale — this dashboard will fill in automatically."
+      primaryLabel="Add your first product"
+      primaryAction={() => (window.location.href = "/products?add=1")}
+      secondaryLabel="Open a session"
+      secondaryAction={() => (window.location.href = "/sessions")}
+    />
   {:else}
     <div class="dashboard">
       <!-- ── Session banner (above the session card) ── -->
@@ -1637,6 +1767,18 @@
   .sm-name { font-weight: 600; font-size: 0.88rem; color: var(--text, #111827); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .sm-meta { font-size: 0.75rem; color: var(--text-light, #6b7280); }
   .sm-value { font-weight: 700; font-size: 0.9rem; color: #c2410c; flex-shrink: 0; }
+
+  /* ── Performance: skip rendering work for below-the-fold cards ── */
+  .sessions-card,
+  .restock-card,
+  .debt-card,
+  .chart-card,
+  .topprod-card,
+  .topcust-card,
+  .slow-card {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 260px;
+  }
 
   /* Responsive */
   @media (max-width: 768px) {
